@@ -1,0 +1,27 @@
+version: "3"
+services:
+  db:
+    image: mysql:8.0
+    container_name: local-mysql
+    restart: always
+    environment:
+      TZ: Asia/Taipei
+      MYSQL_ROOT_PASSWORD: root 
+    command:
+      --max_connections=1000
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-authentication-plugin=mysql_native_password
+    ports:
+      - 3306:3306
+    volumes:
+      - ./data:/var/lib/mysql
+      - ./conf:/etc/mysql/conf.d
+    networks:
+        mysql:
+          aliases:
+            - mysql
+networks:
+  mysql:
+    name: mysql
+    driver: bridge
