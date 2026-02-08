@@ -8,6 +8,9 @@ import com.eventstore.dbclient.EventStoreDBClient;
 import com.eventstore.dbclient.EventStoreDBClientSettings;
 import com.eventstore.dbclient.EventStoreDBConnectionString;
 
+/**
+ * EventStore 的配置類
+ */
 @Configuration
 public class EventStoreConfiguration {
 
@@ -23,7 +26,5 @@ public class EventStoreConfiguration {
 		EventStoreDBClientSettings settings = EventStoreDBConnectionString.parseOrThrow(connectionString);
 		return EventStoreDBClient.create(settings);
 	}
-	
-	
 
 }

@@ -20,76 +20,130 @@ import com.example.demo.infra.event.mapper.EventStoreEventMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * Account Balance Projection 設定與啟動器。
+ *
+ * <p>
+ * 此類別負責建立一個長時間執行的 EventStoreDB Projection， 將 {@code AccountEvent}
+ * 事件流即時投影（Project）至 MySQL Read Model。
+ * </p>
+ *
+ * <h2>架構角色</h2>
+ * <ul>
+ * <li><b>CQRS Read Side</b>：僅負責查詢模型（Read Model）的維護</li>
+ * <li><b>EventStoreDB $all Subscription</b>：訂閱全域事件流</li>
+ * <li><b>At-least-once Processing</b>：搭配 Checkpoint 確保重啟可續跑</li>
+ * </ul>
+ *
+ * <h2>設計特點</h2>
+ * <ul>
+ * <li>使用 MySQL 儲存 Projection Checkpoint（Global Position）</li>
+ * <li>JVM 重啟後可從上次成功處理的位置繼續</li>
+ * <li>Projection 為冪等設計（透過 UPSERT）</li>
+ * </ul>
+ *
+ * <p>
+ * ⚠️ 注意：此 Projection 不處理業務驗證與一致性檢查， 所有業務規則皆應在 Command Side 完成。
+ * </p>
+ */
 @Slf4j
 @Service
 public class AccountProjectionConfiguration {
 
+	/** EventStoreDB 客戶端，用於訂閱 $all stream */
 	private final EventStoreDBClient client;
+
+	/** 將 EventStoreDB ResolvedEvent 轉為 Domain Event */
 	private final EventStoreEventMapper<AccountEvent> mapper;
+
+	/** 用於操作 Read Model 與 Checkpoint 的 JDBC Template */
 	private final JdbcTemplate jdbcTemplate;
 
 	/**
-	 * 作為 projection checkpoint 的唯一識別
+	 * Projection Checkpoint 的唯一識別名稱。
+	 *
+	 * <p>
+	 * 用來區分不同 Projection 的進度紀錄， 對應 projection_checkpoints.projection_name。
+	 * </p>
 	 */
 	private static final String PROJECTION_NAME = "account_balance_projection";
 
 	public AccountProjectionConfiguration(EventStoreDBClient client, EventStoreEventMapper<AccountEvent> mapper,
 			DataSource dataSource) {
+
 		this.client = client;
 		this.mapper = mapper;
 		this.jdbcTemplate = new JdbcTemplate(dataSource);
 	}
 
 	/**
-	 * 啟動 Account Balance Projection
+	 * 啟動 Account Balance Projection。
 	 *
 	 * <p>
-	 * 此方法在 Spring Bean 初始化完成後執行：
+	 * 此方法會在 Spring Bean 初始化完成後自動執行， 並建立一條長時間存在的 EventStoreDB Subscription。
+	 * </p>
+	 *
+	 * <h3>執行流程</h3>
 	 * <ol>
-	 * <li>讀取上一次成功處理的 EventStoreDB Position（Checkpoint）</li>
+	 * <li>讀取 Projection 上次成功處理的 Global Position（Checkpoint）</li>
 	 * <li>從該 Position 之後開始訂閱 $all stream</li>
-	 * <li>將 Domain Event 投影至 MySQL Read Model</li>
+	 * <li>將接收到的 AccountEvent 投影至 MySQL Read Model</li>
+	 * <li>每成功處理一筆事件即更新 Checkpoint</li>
 	 * </ol>
 	 *
 	 * <p>
-	 * 此 Projection 採用「At-least-once + Checkpoint」策略， 透過 MySQL 儲存 offset 來避免 JVM
-	 * 重啟後重跑全部事件。
+	 * 採用「At-least-once + Checkpoint」策略， 即使 JVM 或服務重啟，也不需重新重播全部事件。
+	 * </p>
 	 */
 	@PostConstruct
 	public void startProjection() {
-		// 1. 獲取上次處理到的 Position
+
+		// 1. 取得 Projection 上次成功處理到的 Global Position
 		Position lastPosition = getLastCheckpoint();
 
-		// 2. 配置訂閱選項，只接收 AccountTransactionEvent 前綴事件
+		// 2. 設定訂閱選項：
+		// - 訂閱 $all stream
+		// - 僅接收 AccountEvent 相關事件（以 EventType Prefix 過濾）
 		SubscribeToAllOptions options = SubscribeToAllOptions.get()
 				.filter(SubscriptionFilter.newBuilder().addEventTypePrefix(AccountEvent.class.getSimpleName()).build());
 
-		// 如果有進度紀錄，則從該位置「之後」開始；否則從頭開始
+		// 若已有 Checkpoint，則從該位置「之後」開始；否則從頭訂閱
 		if (lastPosition != null) {
 			options.fromPosition(lastPosition);
 		} else {
 			options.fromStart();
 		}
 
+		// 3. 建立 Subscription Listener
 		client.subscribeToAll(new SubscriptionListener() {
+
+			/**
+			 * 當收到新的事件時呼叫。
+			 */
 			@Override
 			public void onEvent(Subscription subscription, ResolvedEvent resolvedEvent) {
 				try {
+					// 將 EventStoreDB 事件轉為 Domain Event
 					AccountEvent event = mapper.toDomainEvent(resolvedEvent);
+
+					// 投影至 MySQL Read Model
 					applyProjection(event);
 
-					// 3. 獲取全域 Position 並存入資料庫
-					// 只有從 $all 訂閱拿到的 ResolvedEvent 才有 Position
+					// 從 $all 訂閱取得的事件才會包含 Global Position
 					Position position = resolvedEvent.getEvent().getPosition();
 					if (position != null) {
 						saveCheckpoint(position);
 					}
 
 				} catch (Exception e) {
-					log.error("投影處理失敗", e);
+					// At-least-once 策略下，失敗事件會在重啟後重播
+					log.error("Account Projection 投影處理失敗", e);
 				}
 			}
 
+			/**
+			 * 當訂閱被中斷或取消時呼叫。
+			 */
 			@Override
 			public void onCancelled(Subscription subscription, Throwable exception) {
 				if (exception != null) {
@@ -100,64 +154,78 @@ public class AccountProjectionConfiguration {
 			}
 		}, options);
 
-		log.info(">>> [CQRS] Account Projection 已啟動");
+		log.info(">>> [CQRS] Account Balance Projection 已啟動");
 	}
 
 	/**
-	 * 取得 Projection 的最後處理位置（Checkpoint）
+	 * 取得 Projection 最後成功處理的 Global Position（Checkpoint）。
 	 *
 	 * <p>
-	 * Checkpoint 儲存在 MySQL 中， 用來記錄此 Projection 已成功處理到 EventStoreDB 的哪一個 Position。
+	 * Checkpoint 儲存在 MySQL 中， 用來記錄此 Projection 已處理到 EventStoreDB 的哪一個位置。
 	 * </p>
-	 * 
-	 * @return 最後成功處理的 Position；若不存在則回傳 null
+	 *
+	 * @return 最後成功處理的 Position； 若尚未有任何紀錄，則回傳 {@code null}
 	 */
 	private Position getLastCheckpoint() {
-		String sql = "SELECT last_commit, last_prepare FROM projection_checkpoints WHERE projection_name = ?";
+		String sql = """
+				SELECT last_commit, last_prepare
+				FROM projection_checkpoints
+				WHERE projection_name = ?
+				""";
+
 		try {
 			return jdbcTemplate.queryForObject(sql,
 					(rs, rowNum) -> new Position(rs.getLong("last_commit"), rs.getLong("last_prepare")),
 					PROJECTION_NAME);
 		} catch (EmptyResultDataAccessException e) {
-			return null; // 第一次執行，回傳 null 代表從頭開始
+			// 第一次執行 Projection，代表需從頭開始訂閱
+			return null;
 		}
 	}
 
 	/**
-	 * 儲存最新的 Projection Checkpoint
+	 * 儲存最新的 Projection Checkpoint。
 	 *
 	 * <p>
-	 * 使用 UPSERT（ON DUPLICATE KEY UPDATE）， 確保同一個 projection_name 只會有一筆進度紀錄。
+	 * 使用 UPSERT（ON DUPLICATE KEY UPDATE）， 確保同一個 Projection 僅會存在一筆進度紀錄。
 	 * </p>
+	 *
+	 * @param pos 最新成功處理的 Global Position
 	 */
 	private void saveCheckpoint(Position pos) {
 		String sql = """
 				INSERT INTO projection_checkpoints (projection_name, last_commit, last_prepare)
 				VALUES (?, ?, ?)
 				ON DUPLICATE KEY UPDATE
-				    last_commit = VALUES(last_commit),
+				    last_commit  = VALUES(last_commit),
 				    last_prepare = VALUES(last_prepare)
 				""";
+
 		jdbcTemplate.update(sql, PROJECTION_NAME, pos.getCommitUnsigned(), pos.getPrepareUnsigned());
 	}
 
 	/**
-	 * 將 AccountEvent 投影至 MySQL 帳戶餘額表
+	 * 將 {@link AccountEvent} 投影至 MySQL 帳戶餘額 Read Model。
 	 *
 	 * <p>
-	 * 設計重點：
+	 * Projection 設計重點：
+	 * </p>
 	 * <ul>
-	 * <li>使用 UPSERT 解決「帳戶尚未存在」的情境</li>
-	 * <li>透過 + / - 來處理存款與提款</li>
-	 * <li>Projection 僅負責 Read Model，不處理業務驗證</li>
+	 * <li>使用 UPSERT 處理「帳戶首次出現」的情境</li>
+	 * <li>依事件類型決定餘額加減</li>
+	 * <li>僅維護 Read Model，不進行任何業務驗證</li>
 	 * </ul>
+	 *
+	 * @param event 已驗證且已持久化的 Domain Event
 	 */
 	private void applyProjection(AccountEvent event) {
-		// 根據事件類型決定餘額運算方式 (使用 UPSERT 語法解決「初次建立帳號」的問題)
-		// 如果不存在，則建立並設為 event.getAmount()
-		// 如果已存在，則在 balance 上加/減
+
+		// 根據事件類型決定餘額運算方式
+		// DEPOSIT -> +
+		// WITHDRAW -> -
 		String operator = (event.getType() == CommandType.DEPOSIT) ? "+" : "-";
 
+		// 若帳戶不存在則建立，存在則累加 / 累減餘額
 		String sql = String.format("""
 				INSERT INTO accounts (account_id, balance, last_updated_at)
 				VALUES (?, ?, NOW())
@@ -165,9 +233,7 @@ public class AccountProjectionConfiguration {
 				    balance = balance %s ?,
 				    last_updated_at = NOW()
 				""", operator);
-
 		int affectedRows = jdbcTemplate.update(sql, event.getAccountId(), event.getAmount(), event.getAmount());
-
-		log.info(">>> [CQRS] MySQL 更新成功，受影響行數: {}", affectedRows);
+		log.info(">>> [CQRS] Account Balance 投影完成，受影響行數: {}", affectedRows);
 	}
 }

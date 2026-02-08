@@ -8,9 +8,19 @@ import com.example.demo.infra.event.codec.EventJsonCodec;
 
 import tools.jackson.databind.ObjectMapper;
 
+/**
+ * EventCodec 的配置類
+ * <p>
+ * 用來配置可轉換的 Event 類型
+ * </p>
+ * 
+ */
 @Configuration
 public class EventCodecConfiguration {
 
+	/**
+	 * Account Event 的 EventCodec 配置
+	 */
 	@Bean
 	public EventJsonCodec<AccountEvent> accountEventJsonCodec(ObjectMapper objectMapper) {
 		return new EventJsonCodec<>(objectMapper, AccountEvent.class);
