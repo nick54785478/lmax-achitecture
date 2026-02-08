@@ -71,19 +71,30 @@
 
 * **框架:** Spring Boot, JDBC Template
 
+
 * **事件處理:** LMAX Disruptor
+
 
 * **序列化:** Jackson (EventJsonCodec)
 
+
 * **Domain 驅動:** DDD, 聚合根, Command Handler
 
-* **架構模式:** 六角形架構 (Hexagonal), CQRS, Event Sourcing
+
+* **架構模式:** 
+
+>* 六角形架構 (Hexagonal Architecture) 
+>* 讀寫分離(CQRS)
+>* 事件溯源(Event Sourcing)
 
 ### 外部依賴
 
+
 * **EventStoreDB:** 儲存所有 Domain Event，支持事件回放與快照重建
 
+
 * **MySQL:** Read Model 查詢資料庫，用於 CQRS Query
+
 
 * 其他: 可根據需求擴展 Kafka、Redis 或其他投影儲存 (目前尚未有其他規劃)
 
@@ -146,29 +157,41 @@ AccountDbPersistenceHandler 將計算結果 Upsert 至 MySQL accounts 表。
 
 **說明：**
 
+
 **1. 高層模組**
+
 
 * Application / CommandService, Domain / Aggregate
 
+
 * 只依賴「抽象」(Port, Repository Interface)，不直接依賴 EventStore 或 MySQL。
+
 
 **2. 低層模組**
 
+
 * Infrastructure：EventStore, JDBC Template, MySQL
+
 
 * 實作 Port 或 Repository Interface，提供實際功能。
 
+
 **3. 依賴方向**
+
 
 * 高層依賴抽象 (interface / Port)
 
+
 * 低層實作抽象
+
 
 * 當你要替換資料庫或 EventStore，只需替換 Infrastructure 實作即可，Domain 不受影響。
 
 **4. LMAX Disruptor 事件流**
 
+
 * Command → Event → Disruptor → Journal / CommandHandler → ReadModel
+
 
 * 事件流與依賴反轉同時存在，Infrastructure 不會污染 Domain。
 
@@ -177,22 +200,30 @@ AccountDbPersistenceHandler 將計算結果 Upsert 至 MySQL accounts 表。
 
 * Write Model 與 Read Model 完全分離，透過事件進行同步。
 
+
 * EventStoreEventMapper 與 EventJsonCodec 封裝 EventStore 細節，保持 Domain 層純粹。
+
 
 * 將 EventStore 寫入邏輯抽象至 AccountCommandService.asyncAppendToEventStore()，方便切換 EventStore 實作或 Mock 測試。
 
+
 * Read Model 更新不影響 Write Model 成功執行，保證核心交易不受投影失敗干擾。
+
 
 
 ### 設計優勢
 
 * 高效能：Disruptor 提供低延遲、高吞吐量的事件處理。
 
+
 * 可重建性：所有帳戶狀態可從 EventStore 重放。
+
 
 * 技術脫鉤：Domain Event 與儲存、投影完全解耦。
 
+
 * 可靠性：事件持久化先於內存計算，Read Model 異步更新不影響核心交易。
+
 
 * 擴充性：支持多類型事件、快照、投影、Upcaster、版本管理。
 
