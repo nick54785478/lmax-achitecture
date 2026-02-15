@@ -20,4 +20,11 @@ public class AccountEvent {
 
 	private CommandType type; // "DEPOSIT" or "WITHDRAW"
 
+	// --- 為了 Saga 新增的關鍵欄位 ---
+
+	private String transactionId; // 交易追蹤 ID (Saga 的靈魂)
+
+	private String targetId; // 轉帳目標帳戶 (轉帳扣款時需要知道錢往哪去)
+
+	private String description; // 備註 (例如："SUCCESS", "FAIL_ACCOUNT_NOT_FOUND", "COMPENSATION")
 }

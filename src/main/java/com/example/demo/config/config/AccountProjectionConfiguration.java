@@ -15,6 +15,7 @@ import com.eventstore.dbclient.SubscriptionFilter;
 import com.eventstore.dbclient.SubscriptionListener;
 import com.example.demo.application.domain.account.aggregate.vo.CommandType;
 import com.example.demo.application.domain.account.event.AccountEvent;
+import com.example.demo.application.saga.MoneyTransferSaga;
 import com.example.demo.infra.event.mapper.EventStoreEventMapper;
 
 import jakarta.annotation.PostConstruct;
@@ -43,20 +44,28 @@ import lombok.extern.slf4j.Slf4j;
  * </ul>
  *
  * <p>
- * ⚠️ 注意：此 Projection 不處理業務驗證與一致性檢查， 所有業務規則皆應在 Command Side 完成。
+ * 注意：此 Projection 不處理業務驗證與一致性檢查， 所有業務規則皆應在 Command Side 完成。
  * </p>
  */
 @Slf4j
 @Service
 public class AccountProjectionConfiguration {
 
-	/** EventStoreDB 客戶端，用於訂閱 $all stream */
+	private final MoneyTransferSaga moneyTransferSaga;
+
+	/**
+	 * EventStoreDB 客戶端，用於訂閱 $all stream
+	 */
 	private final EventStoreDBClient client;
 
-	/** 將 EventStoreDB ResolvedEvent 轉為 Domain Event */
+	/**
+	 * 將 EventStoreDB ResolvedEvent 轉為 Domain Event
+	 */
 	private final EventStoreEventMapper<AccountEvent> mapper;
 
-	/** 用於操作 Read Model 與 Checkpoint 的 JDBC Template */
+	/**
+	 * 用於操作 Read Model 與 Checkpoint 的 JDBC Template
+	 */
 	private final JdbcTemplate jdbcTemplate;
 
 	/**
@@ -69,8 +78,8 @@ public class AccountProjectionConfiguration {
 	private static final String PROJECTION_NAME = "account_balance_projection";
 
 	public AccountProjectionConfiguration(EventStoreDBClient client, EventStoreEventMapper<AccountEvent> mapper,
-			DataSource dataSource) {
-
+			DataSource dataSource, MoneyTransferSaga moneyTransferSaga) {
+		this.moneyTransferSaga = moneyTransferSaga;
 		this.client = client;
 		this.mapper = mapper;
 		this.jdbcTemplate = new JdbcTemplate(dataSource);
@@ -123,21 +132,25 @@ public class AccountProjectionConfiguration {
 			@Override
 			public void onEvent(Subscription subscription, ResolvedEvent resolvedEvent) {
 				try {
-					// 將 EventStoreDB 事件轉為 Domain Event
 					AccountEvent event = mapper.toDomainEvent(resolvedEvent);
 
-					// 投影至 MySQL Read Model
-					applyProjection(event);
-
-					// 從 $all 訂閱取得的事件才會包含 Global Position
-					Position position = resolvedEvent.getEvent().getPosition();
-					if (position != null) {
-						saveCheckpoint(position);
+					// --- 防火牆 1：攔截失敗事件 ---
+					if (event.getType() == CommandType.FAIL) {
+						log.warn(">>> [CQRS] 檢測到失敗事實 (Tx: {})，僅觸發 Saga 補償，不更新 MySQL", event.getTransactionId());
+						moneyTransferSaga.onEvent(event); // 叫醒 Saga 執行退款
+						saveCheckpoint(resolvedEvent.getEvent().getPosition());
+						return;
 					}
 
+					// --- 防火牆 2：業務流轉 ---
+					moneyTransferSaga.onEvent(event);
+
+					// --- 防火牆 3：精準投影 ---
+					applyProjection(event);
+
+					saveCheckpoint(resolvedEvent.getEvent().getPosition());
 				} catch (Exception e) {
-					// At-least-once 策略下，失敗事件會在重啟後重播
-					log.error("Account Projection 投影處理失敗", e);
+					log.error("Projection 處理失敗", e);
 				}
 			}
 
@@ -219,21 +232,22 @@ public class AccountProjectionConfiguration {
 	 * @param event 已驗證且已持久化的 Domain Event
 	 */
 	private void applyProjection(AccountEvent event) {
+		if (event.getType() == CommandType.DEPOSIT) {
+			// 存款：允許開戶 (UPSERT)
+			String sql = """
+					INSERT INTO accounts (account_id, balance, last_updated_at)
+					VALUES (?, ?, NOW())
+					ON DUPLICATE KEY UPDATE balance = balance + ?, last_updated_at = NOW()
+					""";
+			jdbcTemplate.update(sql, event.getAccountId(), event.getAmount(), event.getAmount());
+		} else if (event.getType() == CommandType.WITHDRAW) {
+			// 提款：嚴禁開戶，只能對現有帳號 UPDATE (這能防止 NON_EXISTENT... 出現)
+			String sql = "UPDATE accounts SET balance = balance - ?, last_updated_at = NOW() WHERE account_id = ?";
+			int affected = jdbcTemplate.update(sql, event.getAmount(), event.getAccountId());
 
-		// 根據事件類型決定餘額運算方式
-		// DEPOSIT -> +
-		// WITHDRAW -> -
-		String operator = (event.getType() == CommandType.DEPOSIT) ? "+" : "-";
-
-		// 若帳戶不存在則建立，存在則累加 / 累減餘額
-		String sql = String.format("""
-				INSERT INTO accounts (account_id, balance, last_updated_at)
-				VALUES (?, ?, NOW())
-				ON DUPLICATE KEY UPDATE
-				    balance = balance %s ?,
-				    last_updated_at = NOW()
-				""", operator);
-		int affectedRows = jdbcTemplate.update(sql, event.getAccountId(), event.getAmount(), event.getAmount());
-		log.info(">>> [CQRS] Account Balance 投影完成，受影響行數: {}", affectedRows);
+			if (affected == 0) {
+				log.error(">>> [CQRS] 提款投影失敗：帳號 {} 不存在", event.getAccountId());
+			}
+		}
 	}
 }

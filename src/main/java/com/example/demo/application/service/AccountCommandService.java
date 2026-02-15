@@ -5,8 +5,8 @@ import org.springframework.stereotype.Service;
 import com.eventstore.dbclient.EventData;
 import com.eventstore.dbclient.EventStoreDBClient;
 import com.example.demo.application.domain.account.event.AccountEvent;
+import com.example.demo.infra.annotation.LmaxTask;
 import com.example.demo.infra.event.mapper.EventStoreEventMapper;
-import com.example.demo.infra.lmax.annotation.LmaxTask;
 
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,9 +41,12 @@ public class AccountCommandService {
 	 * @param action    操作類型，例如 "DEPOSIT" 或 "WITHDRAW"
 	 */
 	@LmaxTask
-	public void processTransaction(String accountId, double amount, String action) {
-		// 注意：此程式碼實際上會被 AOP 攔截，封裝成 LMAX 任務，不會立即同步執行
-		log.info("正在將轉帳請求發送到 LMAX 隊列: {} - {}", action, amount);
+	public void processTransaction(String accountId, double amount, String action, String transactionId, // 新增：交易追蹤 ID
+			String targetId, // 新增：目標帳戶 ID (轉帳時使用)
+			String description // 新增：業務描述 (如 "TRANSFER_INIT")
+	) {
+		// 此處的 AOP 攔截器現在有足夠的資訊來填充 AccountEvent 載體的所有欄位
+		log.info("正在發送指令: {} - 金額: {} - 交易ID: {}", action, amount, transactionId);
 	}
 
 	/**

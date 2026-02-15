@@ -73,8 +73,7 @@ public class DisruptorConfiguration {
 		// 設定事件處理流程：
 		// 1. Journal Handler：事件持久化（Event Store）
 		// 2. Business Handler：更新記憶體 Aggregate
-		disruptor.handleEventsWith(journalHandler, businessHandler);
-
+		disruptor.handleEventsWith(businessHandler).then(journalHandler);
 		// 啟動 Disruptor（開始接受事件）
 		disruptor.start();
 		return disruptor;

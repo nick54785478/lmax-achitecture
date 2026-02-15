@@ -6,6 +6,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import com.example.demo.application.domain.account.aggregate.Account;
+import com.example.demo.application.domain.account.aggregate.vo.CommandType;
 import com.example.demo.application.domain.account.event.AccountEvent;
 import com.example.demo.infra.repository.AccountRepository;
 import com.lmax.disruptor.EventHandler;
@@ -76,27 +77,36 @@ public class AccountDbPersistenceHandler implements EventHandler<AccountEvent> {
 	 */
 	@Override
 	public void onEvent(AccountEvent event, long sequence, boolean endOfBatch) {
-		try {
-			// 從記憶體 Repository 拿到剛剛 BusinessHandler 計算完的最新狀態
-			Account account = accountRepository.load(event.getAccountId());
-			double finalBalance = account.getBalance();
+	    // 1. [新增] 失敗攔截：如果是失敗事件，絕對不准同步到資料庫
+	    if (event.getType() == CommandType.FAIL) {
+	        log.warn("[Seq: {}] 業務驗證為 FAIL，略過 MySQL 快照同步 (Tx: {})", 
+	                 sequence, event.getTransactionId());
+	        return;
+	    }
 
-			// 使用 MySQL Upsert 確保快照最新
-			String sql = """
-					INSERT INTO accounts (account_id, balance, last_updated_at)
-					VALUES (?, ?, NOW())
-					ON DUPLICATE KEY UPDATE
-					    balance = VALUES(balance),
-					    last_updated_at = NOW()
-					""";
-			jdbcTemplate.update(sql, account.getAccountId(), finalBalance);
+	    try {
+	        Account account = accountRepository.load(event.getAccountId());
+	        double finalBalance = account.getBalance();
 
-			if (log.isDebugEnabled()) {
-				log.debug("Read Model 已同步: Account={}, Balance={}", account.getAccountId(), finalBalance);
-			}
-		} catch (Exception e) {
-			// CQRS 精髓：即使持久化失敗，核心交易已保存至 Journal
-			log.error("MySQL 持久化失敗 (Seq: {}): {}", sequence, e.getMessage());
-		}
+	        // 2. [優化] 提款與存款 SQL 分流，防止產生幽靈帳號
+	        if (event.getType() == CommandType.DEPOSIT) {
+	            // 存款：允許建立新帳號 (UPSERT)
+	            String sql = """
+	                    INSERT INTO accounts (account_id, balance, last_updated_at)
+	                    VALUES (?, ?, NOW())
+	                    ON DUPLICATE KEY UPDATE balance = VALUES(balance), last_updated_at = NOW()
+	                    """;
+	            jdbcTemplate.update(sql, account.getAccountId(), finalBalance);
+	        } else {
+	            // 提款：嚴禁 INSERT，只能 UPDATE
+	            String sql = "UPDATE accounts SET balance = ?, last_updated_at = NOW() WHERE account_id = ?";
+	            int affected = jdbcTemplate.update(sql, finalBalance, account.getAccountId());
+	            if (affected == 0) {
+	                log.error(">>> [CQRS] 提款同步失敗：帳號 {} 不存在", account.getAccountId());
+	            }
+	        }
+	    } catch (Exception e) {
+	        log.error("MySQL 持久化失敗 (Seq: {}): {}", sequence, e.getMessage());
+	    }
 	}
 }

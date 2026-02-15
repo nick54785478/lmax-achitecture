@@ -20,6 +20,9 @@ public class EventCodecConfiguration {
 
 	/**
 	 * Account Event 的 EventCodec 配置
+	 * 
+	 * @param objectMapper ObjectMapper
+	 * @return EventCodec
 	 */
 	@Bean
 	public EventJsonCodec<AccountEvent> accountEventJsonCodec(ObjectMapper objectMapper) {

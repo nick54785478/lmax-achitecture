@@ -11,40 +11,45 @@ import com.lmax.disruptor.RingBuffer;
 
 import lombok.extern.slf4j.Slf4j;
 
-/**
- * 請求攔截器 (Aspect) 將外部 Command 轉換為 LMAX Event 並發布至 Ring Buffer
- */
 @Slf4j
 @Aspect
 @Component
 public class AccountLmaxAspect {
-	
+
 	private final RingBuffer<AccountEvent> ringBuffer;
 
 	public AccountLmaxAspect(RingBuffer<AccountEvent> ringBuffer) {
 		this.ringBuffer = ringBuffer;
 	}
 
-	// 注意：args() 裡面的名稱要對應方法參數的順序
-	// 建議直接匹配方法簽名，避免變數名稱造成的攔截失敗
 	@Around("@annotation(com.example.demo.infra.lmax.annotation.LmaxTask)")
 	public Object dispatch(ProceedingJoinPoint pjp) throws Throwable {
+		// 1. 取得攔截方法的所有參數 (必須與 Service 方法順序一致)
 		Object[] args = pjp.getArgs();
+
 		String accountId = (String) args[0];
 		Double amount = (Double) args[1];
-		String action = (String) args[2]; // 這裡對應你 Service 的 String action
+		String action = (String) args[2];
+		String txId = (String) args[3]; // 新增：transactionId
+		String targetId = (String) args[4]; // 新增：targetId
+		String description = (String) args[5]; // 新增：description
+		log.info("targetId: {}", targetId);
 
-//		log.info("AOP 成功攔截！準備發布至 Ring Buffer: Account={}, Action={}", accountId, action);
-
-		// 使用 Lambda 寫法發布事件至 Ring Buffer，避免臨時物件產生 (Garbage Collection Friendly)
+		// 2. 使用 Lambda 發布事件，填充所有新欄位
 		ringBuffer.publishEvent((event, seq) -> {
 			event.setAccountId(accountId);
 			event.setAmount(amount);
-			// 關鍵：將 String 轉換為 Enum Type
 			event.setType(CommandType.valueOf(action.toUpperCase()));
+
+			// 填充 Saga 所需的關鍵資訊
+			event.setTransactionId(txId);
+			event.setTargetId(targetId);
+			event.setDescription(description);
+
+			log.debug("[AOP] 已將完整上下文注入 Ring Buffer: TxId={}", txId);
 		});
 
-		// 關鍵：返回 null 代表中斷原始方法執行，異步交給 Disruptor 處理
+		// 返回 null，中斷原始方法執行，異步交給 Disruptor
 		return null;
 	}
 }
