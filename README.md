@@ -1,4 +1,4 @@
-# LMAX CQRS 架構範例說明
+# LMAX CQRS + Saga 架構範例說明
 
 
 ### 緣起
@@ -15,42 +15,49 @@
 
 ### 專案定位
 
-本專案使用 LMAX Disruptor 作為事件總線，結合 Event Sourcing (ES) 與 Command Query Responsibility Segregation (CQRS)，實現高效、非阻塞、可擴展的帳戶交易系統，並遵循 DDD + 六角形架構 (Hexagonal Architecture)。
+本專案使用 LMAX Disruptor 作為核心引擎，結合 Event Sourcing (ES)、CQRS 與 Saga Pattern，實現一個高效能、具備最終一致性與自動補償機制的帳戶交易系統。
+
+註. 遵循 DDD + 六角形架構 (Hexagonal Architecture)。
 
 
 
 
 ### 核心目標
 
-* 高性能事件處理，低延遲並發交易
+* 高吞吐量：利用 Disruptor 實現低延遲並發交易。
 
-* 完全事件化的帳戶狀態管理，支援重建和快照
+* 最終一致性：透過 Saga 模式 處理跨聚合根（如: 轉帳）的分散式事務。
 
-* Read Model 與 Write Model 分離，實現 CQRS
+* 自動補償機制：當轉帳目標異常時，系統自動發起退款流程。
 
-* 事件儲存與投影技術脫鉤，便於替換底層儲存
+* 完全事件化：帳戶狀態可從 EventStoreDB 完美重建。
+
+* 讀寫分離 (CQRS)：Read Model (MySQL) 與 Write Model (EventStore) 徹底解耦。
+
 
 ### 架構概覽
 
 	Client / API
-	     |
-	     v
-	[CommandService]  <-- 對外提供操作入口
-	     |
-	     v
-	[LMAX Disruptor]  <-- 高效事件隊列
-	     |
-	     +-------------------------+
-	     |                         |
-	[AccountJournalHandler]    [AccountCommandHandler]  <-- 聚合根內存計算
-	     |                         |
-	[EventStoreDB]           [AccountRepository (Memory)]
-	                               |
-	                               v
-	                      [AccountDbPersistenceHandler]  <-- Read Model Updater
-	                               |
-	                               v
-	                           [MySQL accounts]
+	            |
+	            v
+	    [CommandService]  <-- 入口：生成 TxId 並發送指令
+	            |
+	            v
+	     [LMAX Disruptor]  <-- 高效順序處理中心 (Single Writer)
+	            |
+	    +-------+--------------------------+
+	    |       v                          v
+	    | [AccountCommandHandler]  [AccountJournalHandler]
+	    |       |                          |
+	    | [Memory Repository]        [EventStoreDB]
+	    |                                  |
+	    |          +-----------------------+-----------------------+
+	    |          |                       |                       |
+	    |          v                       v                       v
+	    |  [Saga Coordinator]    [Projection Engine]      [Event Replay]
+	    |  (MoneyTransferSaga)  (AccountProjection)      (State Recovery)
+	    |          |                       |
+	    +---> [CommandBusPort]             +---> [MySQL Read Model]
 
 
 ### 核心物件說明
@@ -65,6 +72,10 @@
 | EventStoreEventMapper | 封裝 Domain Event 與 EventStore DB 格式之間的轉換。 |
 | EventJsonCodec | JSON 序列化/反序列化 Domain Event，技術脫鉤，支援多種事件類型。 |
 | ProjectionConfiguration | 啟動投影，從 EventStore 回放事件到 MySQL，支援 Checkpoint。 |
+| MoneyTransferSaga | 事務協調者：監聽事件流，驅動轉帳接力賽（扣款 -> 存款）或啟動補償退款。|
+| CommandBusPort | 內部的指令發布埠：讓 Saga 能繞過外部 API，直接向核心引擎發送補償指令。|
+| ProjectionConfiguration | 讀取模型投影：訂閱全域事件流，異步更新 MySQL 餘額，並攔截失敗事件防止資料污染。 |
+
 
 
 ### 技術與框架
@@ -100,6 +111,31 @@
 
 
 
+### Saga 補償機制 (Distributed Transactions)
+
+針對跨帳戶轉帳，系統採用 Choreography Saga 模式確保資金安全：
+
+**Step 1: 扣款 (Withdrawal)**
+
+* 帳戶 A 執行扣款，成功後產出 TRANSFER_INIT 事件。
+
+**Step 2: 存款 (Deposit)**
+
+* MoneyTransferSaga 監聽到 TRANSFER_INIT，發起指令對帳戶 B 存款 (TRANSFER_DEPOSIT)。
+
+**Step 3: 補償 (Compensation)**
+
+* 若帳戶 B 存款失敗（如帳號不存在）：
+
+>* 系統產出 FAIL 事實。
+
+>* MoneyTransferSaga 捕捉失敗訊號，發起補償指令對帳戶 A 進行退款 (COMPENSATION)。
+
+**設計優勢：** 透過這套機制，系統不需要使用昂貴的資料庫鎖，即可在分秒間達成最終一致性。
+
+
+
+
 ### Event Sourcing 流程
 
 **1. Command 發起**
@@ -122,37 +158,32 @@ AccountDbPersistenceHandler 將計算結果 Upsert 至 MySQL accounts 表。
 
 
 ### 六角形架構定位
-	        
-
-	
-	                   ┌──────────────────┐
-	                   │   外部世界 / API   │
-	                   └────────┬─────────┘
-	                            │
-	                            ▼
-	                   ┌──────────────────┐
-	                   │ Application /    │
-	                   │ CommandService   │  <-- 定義 Port / Use Case
-	                   └────────┬─────────┘
-	                            │
-	           ┌────────────────┴─────────────────┐
-	           │                                  │
-	           ▼                                  ▼
-	 ┌────────────────────────┐          ┌───────────────────────┐
-	 │ Domain / Aggregate     │          │ Domain / Repository   │
-	 │ - Account              │          │ - AccountRepository   │
-	 │ - AccountCommandHandler│          │   (Memory Interface)  │
-	 └─────────┬──────────────┘          └────────┬──────────────┘
-	           │                                  │
-	         依賴抽象 (Port)                依賴抽象 (Repository Interface)  
-	           │                                  │
-	           ▼                                  ▼
-	   ┌───────────────────┐              ┌─────────────────────┐
-	   │ Infrastructure    │              │ Infrastructure      │
-	   │ - EventStore      │              │ - MySQL / JDBC      │    <-- 技術實作
-	   │ - EventMapper     │              │ - JDBC Template     │  
-	   └───────────────────┘              └─────────────────────┘
-
+		        
+		                   ┌──────────────────────────┐
+		                   │           API            │ 
+		                   └────────────┬─────────────┘
+		                                │
+		                   ┌────────────▼─────────────┐
+		                   │    Application Layer     │
+		                   │ - AccountCommandService  │
+		                   │ - MoneyTransferSaga      │ <--- 業務流程協調
+		                   └────────────┬─────────────┘
+		          ┌─────────────────────┴──────────────────────┐
+		          ▼                                            ▼
+		┌──────────────────────────┐          ┌──────────────────────────────┐
+		│    Domain / Aggregate    │          │      Domain / Port           │
+		│ - Account (Entity)       │          │ - CommandBusPort (Interface) │
+		│ - CommandHandler (Logic) │          │ - AccountRepository (Port)   │
+		└─────────┬────────────────┘          └──────────────┬───────────────┘
+		          │                                          │
+		    依賴抽象 (Port)                           實作 Adapter (Infrastructure)
+		          │                                          │
+		          ▼                                          ▼
+		┌──────────────────────────┐          ┌──────────────────────────────┐
+		│   Infrastructure Layer   │          │    Infrastructure Layer      │
+		│ - EventStoreDB Adapter   │          │ - MySQL / JDBC Projection    │
+		│ - DisruptorCommandBus    │          │ - LMAX RingBuffer            │
+		└──────────────────────────┘          └──────────────────────────────┘
 
 
 **說明：**
@@ -196,6 +227,8 @@ AccountDbPersistenceHandler 將計算結果 Upsert 至 MySQL accounts 表。
 * 事件流與依賴反轉同時存在，Infrastructure 不會污染 Domain。
 
 
+
+
 ### CQRS (讀寫分離)
 
 * Write Model 與 Read Model 完全分離，透過事件進行同步。
@@ -208,6 +241,14 @@ AccountDbPersistenceHandler 將計算結果 Upsert 至 MySQL accounts 表。
 
 
 * Read Model 更新不影響 Write Model 成功執行，保證核心交易不受投影失敗干擾。
+
+**CQRS 實作細節**
+
+* Write Model (EventStoreDB)：存儲所有不可變的「事實」。所有業務邏輯僅依賴於此處重構出的內存狀態。
+
+* Read Model (MySQL)：專為查詢設計。投影器 (Projector) 會嚴格過濾 FAIL 事件，確保 MySQL 中的數據永遠是正確的最新餘額，避免「幽靈帳號」與「負數餘額」污染。
+
+* 技術脫鉤：透過 EventJsonCodec 實現 Domain Event 與底層儲存的序列化解耦。
 
 
 
@@ -226,6 +267,8 @@ AccountDbPersistenceHandler 將計算結果 Upsert 至 MySQL accounts 表。
 
 
 * 擴充性：支持多類型事件、快照、投影、Upcaster、版本管理。
+
+* 最終一致性: 系統採用 Choreography Saga 模式確保資料的最終一致性
 
 
 ### 如何執行專案
