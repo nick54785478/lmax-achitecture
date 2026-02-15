@@ -1,4 +1,4 @@
-package com.example.demo.infra.lmax.event;
+package com.example.demo.application.domain.account.event;
 
 import lombok.Data;
 

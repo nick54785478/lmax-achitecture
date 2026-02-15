@@ -5,8 +5,8 @@ import org.springframework.stereotype.Service;
 import com.eventstore.dbclient.EventData;
 import com.eventstore.dbclient.EventStoreDBClient;
 import com.example.demo.application.domain.account.event.AccountEvent;
+import com.example.demo.infra.annotation.LmaxTask;
 import com.example.demo.infra.event.mapper.EventStoreEventMapper;
-import com.example.demo.infra.lmax.annotation.LmaxTask;
 
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
