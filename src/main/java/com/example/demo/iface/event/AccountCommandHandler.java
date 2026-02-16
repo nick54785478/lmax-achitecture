@@ -20,16 +20,16 @@ public class AccountCommandHandler implements EventHandler<AccountEvent> {
 
 	@Override
 	public void onEvent(AccountEvent event, long sequence, boolean endOfBatch) {
-		// 1. 透過 Repository 載入聚合根
-		Account account = accountCommandRepository.load(event.getAccountId());
 
 		try {
+			log.info("透過 Repository 載入聚合根");
+			// 1. 透過 Repository 載入聚合根
+			Account account = accountCommandRepository.load(event.getAccountId());
+			log.info("透過 Repository 載入聚合根結束");
+
 			// 2. 嚴格檢查：如果是「轉帳存款」，目標帳戶必須原本就存在
-			if ("TRANSFER_DEPOSIT".equals(event.getDescription())) {
-				if (isNewAccount(account)) {
-					log.warn("[Seq: {}] 轉帳目標 {} 不存在，拒絕執行存款並觸發失敗", sequence, event.getAccountId());
-					throw new IllegalStateException("TARGET_ACCOUNT_NOT_FOUND");
-				}
+			if ("TRANSFER_DEPOSIT".equals(event.getDescription()) && isNewAccount(account)) {
+				throw new IllegalStateException("TARGET_ACCOUNT_NOT_FOUND");
 			}
 
 			// 3. 呼叫聚合根內部的業務邏輯

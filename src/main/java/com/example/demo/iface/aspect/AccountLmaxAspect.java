@@ -22,7 +22,7 @@ public class AccountLmaxAspect {
 		this.ringBuffer = ringBuffer;
 	}
 
-	@Around("@annotation(com.example.demo.infra.lmax.annotation.LmaxTask)")
+	@Around("@annotation(com.example.demo.infra.annotation.LmaxTask)")
 	public Object dispatch(ProceedingJoinPoint pjp) throws Throwable {
 		// 1. 取得攔截方法的所有參數 (必須與 Service 方法順序一致)
 		Object[] args = pjp.getArgs();

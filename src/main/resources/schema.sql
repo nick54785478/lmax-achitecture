@@ -10,3 +10,15 @@ CREATE TABLE projection_checkpoints (
     last_commit BIGINT NOT NULL,
     last_prepare BIGINT NOT NULL
 ) ENGINE=InnoDB;
+
+CREATE TABLE account_snapshots (
+    account_id VARCHAR(50) NOT NULL,
+    balance DECIMAL(19, 4) NOT NULL,
+    last_event_sequence BIGINT NOT NULL,
+    processed_transactions JSON NOT NULL, -- 存放已處理的交易 ID 集合
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (account_id, last_event_sequence) -- 複合主鍵，支援紀錄歷史快照
+)ENGINE=InnoDB;
+
+-- 建立索引加速「尋找最新快照」
+CREATE INDEX idx_account_latest ON account_snapshots (account_id, last_event_sequence DESC);

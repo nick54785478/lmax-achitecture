@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Configuration;
 import com.example.demo.application.domain.account.event.AccountEvent;
 import com.example.demo.iface.event.AccountCommandHandler;
 import com.example.demo.iface.event.AccountJournalHandler;
+import com.example.demo.iface.event.AccountSnapshotHandler;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.util.DaemonThreadFactory;
@@ -65,7 +66,7 @@ public class DisruptorConfiguration {
 	 */
 	@Bean
 	public Disruptor<AccountEvent> accountDisruptor(AccountJournalHandler journalHandler,
-			AccountCommandHandler businessHandler) {
+			AccountCommandHandler businessHandler, AccountSnapshotHandler snapshotHandler) {
 
 		// 建立 Disruptor，RingBuffer 容量需為 2 的次方
 		Disruptor<AccountEvent> disruptor = new Disruptor<>(AccountEvent::new, 1024, DaemonThreadFactory.INSTANCE);
@@ -73,7 +74,8 @@ public class DisruptorConfiguration {
 		// 設定事件處理流程：
 		// 1. Journal Handler：事件持久化（Event Store）
 		// 2. Business Handler：更新記憶體 Aggregate
-		disruptor.handleEventsWith(businessHandler).then(journalHandler);
+		// 最後一步：異步儲存快照
+		disruptor.handleEventsWith(businessHandler).then(journalHandler, snapshotHandler);
 		// 啟動 Disruptor（開始接受事件）
 		disruptor.start();
 		return disruptor;

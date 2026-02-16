@@ -4,22 +4,41 @@ import java.util.HashSet;
 import java.util.Set;
 
 import com.example.demo.application.domain.account.event.AccountEvent;
+import com.example.demo.application.domain.account.snapshot.AccountSnapshot;
 
 import lombok.Getter;
+import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Getter
+@NoArgsConstructor
 public class Account {
 
-	private final String accountId;
+	private String accountId;
 	private double balance;
 
+	/**
+	 * 紀錄目前聚合根的版本 (對應最後一個處理的事件序號) 這對於從快照恢復後，決定從 EventStore 哪裡開始重播至關重要。
+	 */
+	private long version;
+
 	// 記錄已處理過的交易 ID，防止重複執行相同指令
-	private final Set<String> processedTransactions = new HashSet<>();
+	private Set<String> processedTransactions = new HashSet<>();
 
 	public Account(String accountId) {
 		this.accountId = accountId;
+	}
+
+	/**
+	 * 私有建構子：專門用於從快照恢復
+	 */
+	private Account(AccountSnapshot snapshot) {
+		this.accountId = snapshot.getAccountId();
+		this.balance = snapshot.getBalance();
+		// 深度複製以確保 Aggregate Root 的獨立性
+		this.processedTransactions = new HashSet<>(snapshot.getProcessedTransactions());
+		this.version = snapshot.getLastEventSequence();
 	}
 
 	/**
@@ -68,4 +87,15 @@ public class Account {
 		}
 		this.balance -= amount;
 	}
+
+	/**
+	 * 快照工廠方法：將「還原邏輯」封裝在 Aggregate 內部 這樣 Repository 就不需要知道如何填充 Account 的私有屬性
+	 */
+	public static Account fromSnapshot(AccountSnapshot snapshot) {
+		if (snapshot == null) {
+			throw new IllegalArgumentException("快照資料不可為空");
+		}
+		return new Account(snapshot);
+	}
+
 }
