@@ -1,8 +1,17 @@
 package com.example.demo.config.config;
 
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
 import javax.sql.DataSource;
 
 import org.springframework.dao.EmptyResultDataAccessException;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -19,62 +28,38 @@ import com.example.demo.application.saga.MoneyTransferSaga;
 import com.example.demo.infra.event.mapper.EventStoreEventMapper;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Account Balance Projection 設定與啟動器。
- *
+ * Account Balance Projection 設定與啟動器（高效能批次優化版）。 *
  * <p>
- * 此類別負責建立一個長時間執行的 EventStoreDB Projection， 將 {@code AccountEvent}
- * 事件流即時投影（Project）至 MySQL Read Model。
+ * 設計特點：
  * </p>
- *
- * <h2>架構角色</h2>
  * <ul>
- * <li><b>CQRS Read Side</b>：僅負責查詢模型（Read Model）的維護</li>
- * <li><b>EventStoreDB $all Subscription</b>：訂閱全域事件流</li>
- * <li><b>At-least-once Processing</b>：搭配 Checkpoint 確保重啟可續跑</li>
+ * <li><b>雙重觸發機制</b>：滿足 BATCH_SIZE (500筆) 立即寫入，或每 3 秒定時強制寫入。</li>
+ * <li><b>執行緒安全</b>：使用 synchronized 確保訂閱執行緒與定時執行緒不會產生競態條件。</li>
+ * <li><b>優雅關閉</b>：在 Spring 容器銷毀前，強制執行最後一次沖刷，防止內存數據遺失。</li>
  * </ul>
- *
- * <h2>設計特點</h2>
- * <ul>
- * <li>使用 MySQL 儲存 Projection Checkpoint（Global Position）</li>
- * <li>JVM 重啟後可從上次成功處理的位置繼續</li>
- * <li>Projection 為冪等設計（透過 UPSERT）</li>
- * </ul>
- *
- * <p>
- * 注意：此 Projection 不處理業務驗證與一致性檢查， 所有業務規則皆應在 Command Side 完成。
- * </p>
  */
 @Slf4j
 @Service
 public class AccountProjectionConfiguration {
 
 	private final MoneyTransferSaga moneyTransferSaga;
-
-	/**
-	 * EventStoreDB 客戶端，用於訂閱 $all stream
-	 */
 	private final EventStoreDBClient client;
-
-	/**
-	 * 將 EventStoreDB ResolvedEvent 轉為 Domain Event
-	 */
 	private final EventStoreEventMapper<AccountEvent> mapper;
-
-	/**
-	 * 用於操作 Read Model 與 Checkpoint 的 JDBC Template
-	 */
 	private final JdbcTemplate jdbcTemplate;
 
-	/**
-	 * Projection Checkpoint 的唯一識別名稱。
-	 *
-	 * <p>
-	 * 用來區分不同 Projection 的進度紀錄， 對應 projection_checkpoints.projection_name。
-	 * </p>
-	 */
+	/** 批次緩衝區 */
+	private final List<ResolvedEvent> eventBuffer = new ArrayList<>();
+
+	/** 批次門檻：積累 500 筆事件後進行一次沖刷 */
+	private static final int BATCH_SIZE = 500;
+
+	/** 定時執行器：用於處理剩餘不足批次門檻的事件 */
+	private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
 	private static final String PROJECTION_NAME = "account_balance_projection";
 
 	public AccountProjectionConfiguration(EventStoreDBClient client, EventStoreEventMapper<AccountEvent> mapper,
@@ -85,169 +70,168 @@ public class AccountProjectionConfiguration {
 		this.jdbcTemplate = new JdbcTemplate(dataSource);
 	}
 
-	/**
-	 * 啟動 Account Balance Projection。
-	 *
-	 * <p>
-	 * 此方法會在 Spring Bean 初始化完成後自動執行， 並建立一條長時間存在的 EventStoreDB Subscription。
-	 * </p>
-	 *
-	 * <h3>執行流程</h3>
-	 * <ol>
-	 * <li>讀取 Projection 上次成功處理的 Global Position（Checkpoint）</li>
-	 * <li>從該 Position 之後開始訂閱 $all stream</li>
-	 * <li>將接收到的 AccountEvent 投影至 MySQL Read Model</li>
-	 * <li>每成功處理一筆事件即更新 Checkpoint</li>
-	 * </ol>
-	 *
-	 * <p>
-	 * 採用「At-least-once + Checkpoint」策略， 即使 JVM 或服務重啟，也不需重新重播全部事件。
-	 * </p>
-	 */
 	@PostConstruct
 	public void startProjection() {
+		// --- 1. 啟動定時沖刷任務 ---
+		// 每隔 3 秒檢查一次緩衝區，若有資料則強制寫入，解決測試時「資料不跳動」的問題
+		scheduler.scheduleWithFixedDelay(this::flushBuffer, 3, 3, TimeUnit.SECONDS);
 
-		// 1. 取得 Projection 上次成功處理到的 Global Position
+		// --- 2. 取得 Checkpoint 並啟動訂閱 ---
 		Position lastPosition = getLastCheckpoint();
 
-		// 2. 設定訂閱選項：
-		// - 訂閱 $all stream
-		// - 僅接收 AccountEvent 相關事件（以 EventType Prefix 過濾）
 		SubscribeToAllOptions options = SubscribeToAllOptions.get()
 				.filter(SubscriptionFilter.newBuilder().addEventTypePrefix(AccountEvent.class.getSimpleName()).build());
 
-		// 若已有 Checkpoint，則從該位置「之後」開始；否則從頭訂閱
 		if (lastPosition != null) {
 			options.fromPosition(lastPosition);
 		} else {
 			options.fromStart();
 		}
 
-		// 3. 建立 Subscription Listener
 		client.subscribeToAll(new SubscriptionListener() {
 
-			/**
-			 * 當收到新的事件時呼叫。
-			 */
 			@Override
 			public void onEvent(Subscription subscription, ResolvedEvent resolvedEvent) {
-				try {
-					AccountEvent event = mapper.toDomainEvent(resolvedEvent);
-
-					// --- 防火牆 1：攔截失敗事件 ---
-					if (event.getType() == CommandType.FAIL) {
-						log.warn(">>> [CQRS] 檢測到失敗事實 (Tx: {})，僅觸發 Saga 補償，不更新 MySQL", event.getTransactionId());
-						moneyTransferSaga.onEvent(event); // 叫醒 Saga 執行退款
-						saveCheckpoint(resolvedEvent.getEvent().getPosition());
-						return;
+				// 將事件加入緩衝區
+				synchronized (eventBuffer) {
+					eventBuffer.add(resolvedEvent);
+					// 若達到門檻，則由目前訂閱執行緒直接觸發寫入，不等待定時器
+					if (eventBuffer.size() >= BATCH_SIZE) {
+						flushBuffer();
 					}
-
-					// --- 防火牆 2：業務流轉 ---
-					moneyTransferSaga.onEvent(event);
-
-					// --- 防火牆 3：精準投影 ---
-					applyProjection(event);
-
-					saveCheckpoint(resolvedEvent.getEvent().getPosition());
-				} catch (Exception e) {
-					log.error("Projection 處理失敗", e);
 				}
 			}
 
-			/**
-			 * 當訂閱被中斷或取消時呼叫。
-			 */
 			@Override
 			public void onCancelled(Subscription subscription, Throwable exception) {
 				if (exception != null) {
 					log.error("Account Projection 訂閱中斷", exception);
-				} else {
-					log.info("Account Projection 訂閱已正常關閉");
 				}
+				flushBuffer(); // 中斷時嘗試沖刷
 			}
 		}, options);
 
-		log.info(">>> [CQRS] Account Balance Projection 已啟動");
+		log.info(">>> [CQRS] Account Balance Projection 已啟動（批次模式 Size: {}, 定時模式: 3s）", BATCH_SIZE);
 	}
 
 	/**
-	 * 取得 Projection 最後成功處理的 Global Position（Checkpoint）。
-	 *
-	 * <p>
-	 * Checkpoint 儲存在 MySQL 中， 用來記錄此 Projection 已處理到 EventStoreDB 的哪一個位置。
-	 * </p>
-	 *
-	 * @return 最後成功處理的 Position； 若尚未有任何紀錄，則回傳 {@code null}
+	 * 在 Bean 銷毀前 (如重啟服務時) 確保緩衝區清空
 	 */
-	private Position getLastCheckpoint() {
-		String sql = """
-				SELECT last_commit, last_prepare
-				FROM projection_checkpoints
-				WHERE projection_name = ?
-				""";
+	@PreDestroy
+	public void stop() {
+		log.info(">>> [System] 正在關閉 Projection 服務，執行最終沖刷...");
+		scheduler.shutdown(); // 停止定時器
+		flushBuffer(); // 最後一搏，確保資料不掉
+	}
 
+	/**
+	 * 執行批次沖刷：將緩衝區內的事件分類處理，並一次性寫入資料庫。
+	 */
+	private void flushBuffer() {
+		// 使用 synchronized 鎖定緩衝區，防止定時執行緒與訂閱執行緒衝突
+		synchronized (eventBuffer) {
+			if (eventBuffer.isEmpty())
+				return;
+
+			long startTime = System.currentTimeMillis();
+			List<AccountEvent> successDeposits = new ArrayList<>();
+			List<AccountEvent> successWithdraws = new ArrayList<>();
+			Position lastProcessedPosition = null;
+
+			// 判定觸發原因
+			String triggerReason = eventBuffer.size() >= BATCH_SIZE ? "達到門檻" : "定時觸發";
+			log.info(">>> [Batch] 執行沖刷 (原因: {}, 數量: {})", triggerReason, eventBuffer.size());
+
+			try {
+				// 1. 解析緩衝區事件並進行預處理
+				for (ResolvedEvent re : eventBuffer) {
+					AccountEvent event = mapper.toDomainEvent(re);
+					lastProcessedPosition = re.getEvent().getPosition();
+
+					// 驅動 Saga (注意：Saga 內部必須具備冪等性處理)
+					moneyTransferSaga.onEvent(event);
+
+					if (event.getType() != CommandType.FAIL) {
+						if (event.getType() == CommandType.DEPOSIT) {
+							successDeposits.add(event);
+						} else if (event.getType() == CommandType.WITHDRAW) {
+							successWithdraws.add(event);
+						}
+					}
+				}
+
+				// 2. 執行高效率批次 SQL
+				if (!successDeposits.isEmpty())
+					executeDepositBatch(successDeposits);
+				if (!successWithdraws.isEmpty())
+					executeWithdrawBatch(successWithdraws);
+
+				// 3. 儲存 Checkpoint
+				if (lastProcessedPosition != null) {
+					saveCheckpoint(lastProcessedPosition);
+				}
+
+				log.info(">>> [Batch] 沖刷完成，耗時 {} ms", System.currentTimeMillis() - startTime);
+				eventBuffer.clear(); // 務必在 synchronized 塊內清空
+
+			} catch (Exception e) {
+				log.error(">>> [Batch] 批次寫入失敗！原因: {}", e.getMessage(), e);
+			}
+		}
+	}
+
+	/* --- SQL 批次與輔助方法保持不變 --- */
+
+	private void executeDepositBatch(List<AccountEvent> events) {
+		String sql = "INSERT INTO accounts (account_id, balance, last_updated_at) VALUES (?, ?, NOW()) "
+				+ "ON DUPLICATE KEY UPDATE balance = balance + ?, last_updated_at = NOW()";
+		jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
+			@Override
+			public void setValues(PreparedStatement ps, int i) throws SQLException {
+				AccountEvent e = events.get(i);
+				ps.setString(1, e.getAccountId());
+				ps.setDouble(2, e.getAmount());
+				ps.setDouble(3, e.getAmount());
+			}
+
+			@Override
+			public int getBatchSize() {
+				return events.size();
+			}
+		});
+	}
+
+	private void executeWithdrawBatch(List<AccountEvent> events) {
+		String sql = "UPDATE accounts SET balance = balance - ?, last_updated_at = NOW() WHERE account_id = ?";
+		jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
+			@Override
+			public void setValues(PreparedStatement ps, int i) throws SQLException {
+				AccountEvent e = events.get(i);
+				ps.setDouble(1, e.getAmount());
+				ps.setString(2, e.getAccountId());
+			}
+
+			@Override
+			public int getBatchSize() {
+				return events.size();
+			}
+		});
+	}
+
+	private Position getLastCheckpoint() {
+		String sql = "SELECT last_commit, last_prepare FROM projection_checkpoints WHERE projection_name = ?";
 		try {
 			return jdbcTemplate.queryForObject(sql,
 					(rs, rowNum) -> new Position(rs.getLong("last_commit"), rs.getLong("last_prepare")),
 					PROJECTION_NAME);
 		} catch (EmptyResultDataAccessException e) {
-			// 第一次執行 Projection，代表需從頭開始訂閱
 			return null;
 		}
 	}
 
-	/**
-	 * 儲存最新的 Projection Checkpoint。
-	 *
-	 * <p>
-	 * 使用 UPSERT（ON DUPLICATE KEY UPDATE）， 確保同一個 Projection 僅會存在一筆進度紀錄。
-	 * </p>
-	 *
-	 * @param pos 最新成功處理的 Global Position
-	 */
 	private void saveCheckpoint(Position pos) {
-		String sql = """
-				INSERT INTO projection_checkpoints (projection_name, last_commit, last_prepare)
-				VALUES (?, ?, ?)
-				ON DUPLICATE KEY UPDATE
-				    last_commit  = VALUES(last_commit),
-				    last_prepare = VALUES(last_prepare)
-				""";
-
+		String sql = "INSERT INTO projection_checkpoints (projection_name, last_commit, last_prepare) VALUES (?, ?, ?) "
+				+ "ON DUPLICATE KEY UPDATE last_commit = VALUES(last_commit), last_prepare = VALUES(last_prepare)";
 		jdbcTemplate.update(sql, PROJECTION_NAME, pos.getCommitUnsigned(), pos.getPrepareUnsigned());
-	}
-
-	/**
-	 * 將 {@link AccountEvent} 投影至 MySQL 帳戶餘額 Read Model。
-	 *
-	 * <p>
-	 * Projection 設計重點：
-	 * </p>
-	 * <ul>
-	 * <li>使用 UPSERT 處理「帳戶首次出現」的情境</li>
-	 * <li>依事件類型決定餘額加減</li>
-	 * <li>僅維護 Read Model，不進行任何業務驗證</li>
-	 * </ul>
-	 *
-	 * @param event 已驗證且已持久化的 Domain Event
-	 */
-	private void applyProjection(AccountEvent event) {
-		if (event.getType() == CommandType.DEPOSIT) {
-			// 存款：允許開戶 (UPSERT)
-			String sql = """
-					INSERT INTO accounts (account_id, balance, last_updated_at)
-					VALUES (?, ?, NOW())
-					ON DUPLICATE KEY UPDATE balance = balance + ?, last_updated_at = NOW()
-					""";
-			jdbcTemplate.update(sql, event.getAccountId(), event.getAmount(), event.getAmount());
-		} else if (event.getType() == CommandType.WITHDRAW) {
-			// 提款：嚴禁開戶，只能對現有帳號 UPDATE (這能防止 NON_EXISTENT... 出現)
-			String sql = "UPDATE accounts SET balance = balance - ?, last_updated_at = NOW() WHERE account_id = ?";
-			int affected = jdbcTemplate.update(sql, event.getAmount(), event.getAccountId());
-
-			if (affected == 0) {
-				log.error(">>> [CQRS] 提款投影失敗：帳號 {} 不存在", event.getAccountId());
-			}
-		}
 	}
 }
