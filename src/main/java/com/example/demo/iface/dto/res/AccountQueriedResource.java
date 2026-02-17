@@ -1,4 +1,4 @@
-package com.example.demo.iface.dto;
+package com.example.demo.iface.dto.res;
 
 import com.example.demo.application.shared.projection.AccountQueriedProjection;
 

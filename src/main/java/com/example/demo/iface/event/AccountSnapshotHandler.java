@@ -25,9 +25,12 @@ public class AccountSnapshotHandler implements EventHandler<AccountEvent> {
 	 * 確保這裡是用我們新定義的技術介面名稱
 	 */
 	private final AccountSnapshotPersistence snapshotPersistence;
+
 	private final AccountRepository accountRepository;
 
-	/** 測試期間：改為 1 (每筆都存) 或 5，確認邏輯通了再改回 100 */
+	/**
+	 * 測試期間：改為 1 (每筆都存) 或 5，確認邏輯通了再改回 100
+	 */
 	private final int SNAPSHOT_THRESHOLD = 5;
 
 	@Override
