@@ -51,6 +51,8 @@ public class Account {
 
 	/**
 	 * 聚合根統一入口：包含冪等性檢查與規則應用
+	 * 
+	 * @param event 事件
 	 */
 	public void apply(AccountEvent event) {
 		// 1. 冪等性檢查：如果這筆交易 ID 已經處理過，直接跳過或拋出異常
@@ -108,6 +110,8 @@ public class Account {
 
 	/**
 	 * 維護交易 ID 的滑動視窗 確保 processedTransactions 的大小永遠不會超過 MAX_IDEMPOTENT_IDS
+	 * 
+	 * @param txId Transaction Id
 	 */
 	private void maintainIdempotentWindow(String txId) {
 		processedTransactions.add(txId);

@@ -20,7 +20,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Saga 超時監視器 職責：主動發現並修復因不可抗力而中斷的轉帳流程。
+ * Saga 超時監視器
+ * <p>
+ * 職責：主動發現並修復因不可抗力而中斷的轉帳流程。
+ * </p>
  */
 @Slf4j
 @Component
@@ -55,6 +58,11 @@ public class SagaTimeoutWatcher {
 		}
 	}
 
+	/**
+	 * 觸發回復機制
+	 * 
+	 * @param originalEvent 原始事件
+	 */
 	private void triggerRecovery(AccountEvent originalEvent) {
 		AccountEvent recoveryEvent = new AccountEvent();
 		recoveryEvent.setTransactionId(originalEvent.getTransactionId());
@@ -73,57 +81,52 @@ public class SagaTimeoutWatcher {
 
 	/**
 	 * 從全域流 ($all) 中搜尋特定交易 ID 的原始提款事件
-	 */
-	/**
-	 * 從全域流 ($all) 中搜尋特定交易 ID 的原始提款事件
+	 * 
+	 * @param txId Transaction Id
+	 * @return 提款事件
 	 */
 	private Optional<AccountEvent> findOriginalWithdrawEvent(String txId) {
-	    try {
-	        ReadAllOptions options = ReadAllOptions.get()
-	                .backwards()
-	                .fromEnd()
-	                .resolveLinkTos()
-	                .maxCount(2000); // 掃描深度
+		try {
+			ReadAllOptions options = ReadAllOptions.get().backwards().fromEnd().resolveLinkTos().maxCount(2000); // 掃描深度
 
-	        List<ResolvedEvent> results = eventStoreClient.readAll(options)
-	                .get().getEvents();
+			List<ResolvedEvent> results = eventStoreClient.readAll(options).get().getEvents();
 
-	        log.info(">>> [Watcher Debug] 掃描 {} 筆事件 ($all)", results.size());
+			log.info(">>> [Watcher Debug] 掃描 {} 筆事件 ($all)", results.size());
 
-	        for (ResolvedEvent re : results) {
-	            RecordedEvent recordedEvent = re.getEvent();
-	            if (recordedEvent == null) continue;
+			for (ResolvedEvent re : results) {
+				RecordedEvent recordedEvent = re.getEvent();
+				if (recordedEvent == null)
+					continue;
 
-	            String eventType = recordedEvent.getEventType();
-	            
-	            // 1. 跳過系統事件 ($)
-	            if (recordedEvent.getStreamId().startsWith("$") || eventType.startsWith("$")) {
-	                continue;
-	            }
+				String eventType = recordedEvent.getEventType();
 
-	            // 2. 【關鍵修正】不要判斷 EventType 字串，因為它存的是 "AccountEvent"
-	            // 直接嘗試反序列化
-	            try {
-	                AccountEvent event = mapper.toDomainEvent(re);
-	                
-	                // 3. 解析後，檢查內部的 type 欄位是否為 WITHDRAW
-	                if (event.getType() == CommandType.WITHDRAW && 
-	                    txId.equals(event.getTransactionId())) {
-	                    
-	                    log.info(">>> [Scanner] 🎯 命中目標！TxId: {}", txId);
-	                    return Optional.of(event);
-	                }
-	            } catch (Exception e) {
-	                // 忽略無法解析的事件
-	                continue;
-	            }
-	        }
-	        
-	        log.warn(">>> [Scanner] 找不到 TxId: {}", txId);
+				// 1. 跳過系統事件 ($)
+				if (recordedEvent.getStreamId().startsWith("$") || eventType.startsWith("$")) {
+					continue;
+				}
 
-	    } catch (Exception e) {
-	        log.error(">>> [Watcher] 回溯失敗", e);
-	    }
-	    return Optional.empty();
+				// 2. 【關鍵修正】不要判斷 EventType 字串，因為它存的是 "AccountEvent"
+				// 直接嘗試反序列化
+				try {
+					AccountEvent event = mapper.toDomainEvent(re);
+
+					// 3. 解析後，檢查內部的 type 欄位是否為 WITHDRAW
+					if (event.getType() == CommandType.WITHDRAW && txId.equals(event.getTransactionId())) {
+
+						log.info(">>> [Scanner] 🎯 命中目標！TxId: {}", txId);
+						return Optional.of(event);
+					}
+				} catch (Exception e) {
+					// 忽略無法解析的事件
+					continue;
+				}
+			}
+
+			log.warn(">>> [Scanner] 找不到 TxId: {}", txId);
+
+		} catch (Exception e) {
+			log.error(">>> [Watcher] 回溯失敗", e);
+		}
+		return Optional.empty();
 	}
 }
