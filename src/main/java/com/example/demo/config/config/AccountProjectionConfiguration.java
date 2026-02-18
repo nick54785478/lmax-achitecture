@@ -31,16 +31,22 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 帳戶餘額投影器 (Account Balance Projection) - 高效能批次優化與一致性強化版
- *
+ * <h1>帳戶餘額投影器 (Account Balance Projection)</h1>
  * <p>
- * 設計核心：
+ * <b>職責：</b> 本組件作為 CQRS 架構中的實時同步橋樑，負責訂閱 EventStoreDB 的「事實流 (Event Stream)」，
+ * 並將其投影至 MySQL「讀取模型 (Read Model)」。
  * </p>
+ *
+ * <h2>設計精髓：</h2>
  * <ul>
- * <li><b>雙重觸發沖刷</b>：兼顧高吞吐量與低延遲。</li>
- * <li><b>事實防火牆</b>：絕對攔截 FAIL 事件，確保 MySQL 僅反映成功的事實。</li>
- * <li><b>防禦性寫入</b>：提款僅使用 UPDATE，防止重播時產生「幽靈帳號」。</li>
+ * <li><b>事實防火牆 (Fact Firewall)</b>：實施嚴格的業務語義檢查，攔截失敗事實，防止無效數據污染讀取模型。</li>
+ * <li><b>雙重觸發批次 (Dual-Trigger
+ * Batch)</b>：結合「緩衝區水位」與「定時心跳」，在高吞吐與低延遲之間取得動態平衡。</li>
+ * <li><b>斷點續傳 (Checkpointing)</b>：透過持久化 Position，確保系統重啟後能精確恢復進度，落實「至少處理一次
+ * (At-least-once)」語義。</li>
  * </ul>
+ *
+ * 
  */
 @Slf4j
 @Service
@@ -50,12 +56,33 @@ public class AccountProjectionConfiguration {
 	private final EventStoreEventMapper<AccountEvent> mapper;
 	private final JdbcTemplate jdbcTemplate;
 
+	/**
+	 * 批次處理緩衝區：儲存待投影的原始事件
+	 */
 	private final List<ResolvedEvent> eventBuffer = new ArrayList<>();
+
+	/**
+	 * 批次容量閾值：緩衝區達到此數量時觸發主動沖刷
+	 */
 	private static final int BATCH_SIZE = 500;
+
+	/**
+	 * 背景排程器：執行定時沖刷與資源監控
+	 */
 	private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
+	/**
+	 * 投影標籤：用於在資料庫中區分不同的投影進度
+	 */
 	private static final String PROJECTION_NAME = "account_balance_projection";
 
+	/**
+	 * 建構投影配置並初始化資料庫模板。
+	 *
+	 * @param client     EventStoreDB 客戶端，用於建立事實流訂閱。
+	 * @param mapper     事件映射器，負責將原始字節轉譯為領域事件 {@link AccountEvent}。
+	 * @param dataSource MySQL 數據源，用於更新 Read Model。
+	 */
 	public AccountProjectionConfiguration(EventStoreDBClient client, EventStoreEventMapper<AccountEvent> mapper,
 			DataSource dataSource) {
 		this.client = client;
@@ -63,13 +90,22 @@ public class AccountProjectionConfiguration {
 		this.jdbcTemplate = new JdbcTemplate(dataSource);
 	}
 
+	/**
+	 * 啟動投影訂閱生命週期。
+	 * <p>
+	 * <b>Given:</b> 系統啟動。 <br>
+	 * <b>When:</b> 獲取最後處理位點並啟動定時調度。 <br>
+	 * <b>Then:</b> 開始從 EventStoreDB 接收實時推送。
+	 * </p>
+	 */
 	@PostConstruct
 	public void startProjection() {
-		// 定時執行：保障低流量時資料仍能及時沖刷
+		// 定時心跳沖刷：確保即便在低流量期間，餘額更新的延遲也不會超過 3 秒
 		scheduler.scheduleWithFixedDelay(this::flushBuffer, 3, 3, TimeUnit.SECONDS);
 
 		Position lastPosition = getLastCheckpoint();
 
+		// 僅訂閱與帳戶相關的事件，最大程度減少網路與解析開銷
 		SubscribeToAllOptions options = SubscribeToAllOptions.get()
 				.filter(SubscriptionFilter.newBuilder().addEventTypePrefix(AccountEvent.class.getSimpleName()).build());
 
@@ -84,6 +120,7 @@ public class AccountProjectionConfiguration {
 			public void onEvent(Subscription subscription, ResolvedEvent resolvedEvent) {
 				synchronized (eventBuffer) {
 					eventBuffer.add(resolvedEvent);
+					// 觸發條件 1：水位達標，觸發高性能批次處理
 					if (eventBuffer.size() >= BATCH_SIZE) {
 						flushBuffer();
 					}
@@ -93,50 +130,54 @@ public class AccountProjectionConfiguration {
 			@Override
 			public void onCancelled(Subscription subscription, Throwable exception) {
 				if (exception != null)
-					log.error("Projection 訂閱異常中斷", exception);
+					log.error(">>> [CQRS] 訂閱連線中斷: {}", exception.getMessage());
 				flushBuffer();
 			}
 		}, options);
 
-		log.info(">>> [CQRS] 投影服務已啟動，失敗事實防火牆已佈署。");
+		log.info(">>> [CQRS] 投影服務已啟動，追蹤進度：{}", lastPosition != null ? lastPosition : "全新起點");
 	}
 
+	/**
+	 * 關閉服務前的優雅停機處理。
+	 * <p>
+	 * 確保所有殘留在緩衝區的事件都能被正確投影並保存 Checkpoint。
+	 * </p>
+	 */
 	@PreDestroy
 	public void stop() {
-		log.info(">>> [System] 執行最終數據沖刷並關閉服務...");
+		log.info(">>> [System] 執行優雅停機，正在沖刷緩衝區...");
 		scheduler.shutdown();
 		flushBuffer();
 	}
 
 	/**
-	 * 批次沖刷邏輯：落實「先攔截、後處理」的防火牆機制
+	 * 執行批次投影沖刷。
+	 * <p>
+	 * <b>核心邏輯：</b> 實作「事實防火牆」，將收到的事件分類緩衝， 並在更新 Read Model 後持久化 {@link Position} 進度。
+	 * </p>
 	 */
 	private void flushBuffer() {
 		synchronized (eventBuffer) {
-			if (eventBuffer.isEmpty())
+			if (eventBuffer.isEmpty()) {
 				return;
-
+			}
 			long startTime = System.currentTimeMillis();
 			List<AccountEvent> successDeposits = new ArrayList<>();
 			List<AccountEvent> successWithdraws = new ArrayList<>();
 			Position lastProcessedPosition = null;
 
 			try {
-				// --- 核心過濾流程 ---
 				for (ResolvedEvent re : eventBuffer) {
 					AccountEvent event = mapper.toDomainEvent(re);
 					lastProcessedPosition = re.getEvent().getPosition();
 
-//					// 1. [核心] 不論成敗，Saga 都必須接收事件以決定是否需要補償
-//					moneyTransferSaga.onEvent(event);
-
-					// 2. [防火牆] 絕對過濾掉 FAIL 事實，不准影響 MySQL 狀態
+					// 事實防火牆：絕對過濾 FAIL 事件。讀取模型只反映成功的世界。
 					if (event.getType() == CommandType.FAIL) {
-						log.warn(">>> [CQRS] 攔截到失敗事實 (Tx: {})，已跳過 SQL 投影", event.getTransactionId());
-						continue; // 攔截此事件，不進入後續的批次寫入佇列
+						log.warn(">>> [Firewall] 攔截失敗交易 (Tx: {})，已從投影路徑中移除", event.getTransactionId());
+						continue;
 					}
 
-					// 3. 只有成功的事實才進行分類緩衝
 					if (event.getType() == CommandType.DEPOSIT) {
 						successDeposits.add(event);
 					} else if (event.getType() == CommandType.WITHDRAW) {
@@ -144,29 +185,33 @@ public class AccountProjectionConfiguration {
 					}
 				}
 
-				// --- 批次 SQL 執行 ---
 				if (!successDeposits.isEmpty())
 					executeDepositBatch(successDeposits);
 				if (!successWithdraws.isEmpty())
 					executeWithdrawBatch(successWithdraws);
 
-				// --- 更新進度 ---
+				// 更新斷點進度，確保不重複處理
 				if (lastProcessedPosition != null) {
 					saveCheckpoint(lastProcessedPosition);
 				}
 
-				log.info(">>> [Batch] 沖刷完畢 (數量: {}), 耗時: {} ms", eventBuffer.size(),
+				log.info(">>> [Projection] 批次完成，同步數量: {}，耗時: {} ms", eventBuffer.size(),
 						System.currentTimeMillis() - startTime);
 				eventBuffer.clear();
 
 			} catch (Exception e) {
-				log.error(">>> [Batch] 投影沖刷過程發生嚴重異常: {}", e.getMessage(), e);
+				log.error(">>> [Projection] 嚴重故障！緩衝區保留待下回合處理: {}", e.getMessage(), e);
 			}
 		}
 	}
 
 	/**
-	 * 存款批次：採用 UPSERT 策略
+	 * 執行存款事實的批次投影。
+	 * <p>
+	 * 採用 <b>Upsert</b> 策略：若帳戶不存在則建立，存在則累加金額。
+	 * </p>
+	 *
+	 * @param events 待處理的成功存款事件清單。
 	 */
 	private void executeDepositBatch(List<AccountEvent> events) {
 		String sql = "INSERT INTO accounts (account_id, balance, last_updated_at) VALUES (?, ?, NOW()) "
@@ -188,10 +233,12 @@ public class AccountProjectionConfiguration {
 	}
 
 	/**
-	 * 提款批次：採用純 UPDATE 策略
+	 * 執行提款事實的批次投影。
 	 * <p>
-	 * 這能確保提款動作不會在資料庫產生不存在的「幽靈帳號」紀錄。
+	 * 採用 <b>Strict Update</b> 策略：僅針對現有帳戶進行餘額扣除，防止產生幽靈紀錄。
 	 * </p>
+	 *
+	 * @param events 待處理的成功提款事件清單。
 	 */
 	private void executeWithdrawBatch(List<AccountEvent> events) {
 		String sql = "UPDATE accounts SET balance = balance - ?, last_updated_at = NOW() WHERE account_id = ?";
@@ -210,6 +257,11 @@ public class AccountProjectionConfiguration {
 		});
 	}
 
+	/**
+	 * 從 MySQL 持久化層讀取該投影器的最後執行位置。
+	 *
+	 * @return 斷點位置 {@link Position}；若為初次啟動則回傳 null。
+	 */
 	private Position getLastCheckpoint() {
 		String sql = "SELECT last_commit, last_prepare FROM projection_checkpoints WHERE projection_name = ?";
 		try {
@@ -221,6 +273,11 @@ public class AccountProjectionConfiguration {
 		}
 	}
 
+	/**
+	 * 將當前處理成功的最新位置持久化至 MySQL。
+	 *
+	 * @param pos 當前批次中最後一個事件的 EventStoreDB Position 資訊。
+	 */
 	private void saveCheckpoint(Position pos) {
 		String sql = "INSERT INTO projection_checkpoints (projection_name, last_commit, last_prepare) VALUES (?, ?, ?) "
 				+ "ON DUPLICATE KEY UPDATE last_commit = VALUES(last_commit), last_prepare = VALUES(last_prepare)";

@@ -20,8 +20,9 @@ public interface AccountSnapshotRepositoryPort {
 	void save(AccountSnapshot snapshot);
 
 	/**
-	 * 取得該帳戶最新的快照 * @param accountId 帳戶識別碼
+	 * 取得該帳戶最新的快照
 	 * 
+	 * @param accountId 帳戶識別碼
 	 * @return 最新的快照物件，若無快照則回傳 Optional.empty()
 	 */
 	Optional<AccountSnapshot> findLatest(String accountId);

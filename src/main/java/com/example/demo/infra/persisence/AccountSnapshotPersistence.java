@@ -11,8 +11,18 @@ import com.example.demo.application.domain.account.snapshot.AccountSnapshot;
  * </p>
  */
 public interface AccountSnapshotPersistence {
-	
+
+	/**
+	 * 儲存快照 (AccountSnapshot)
+	 * 
+	 * @param snapshot 快照
+	 */
 	void save(AccountSnapshot snapshot);
 
+	/**
+	 * 取得最新的快照 (AccountSnapshot)
+	 * 
+	 * @param accountId 帳號的唯一值
+	 */
 	Optional<AccountSnapshot> findLatest(String accountId);
 }

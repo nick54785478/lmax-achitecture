@@ -49,6 +49,12 @@ public class AccountSnapshotAdapter implements AccountSnapshotRepositoryPort {
 		}
 	}
 
+	/**
+	 * 取得該帳戶最新的快照
+	 * 
+	 * @param accountId 帳戶識別碼
+	 * @return 最新的快照物件，若無快照則回傳 Optional.empty()
+	 */
 	@Override
 	public Optional<AccountSnapshot> findLatest(String accountId) {
 		String sql = """

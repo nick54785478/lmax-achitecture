@@ -4,9 +4,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import com.example.demo.application.domain.account.event.AccountEvent;
-import com.example.demo.iface.event.AccountCommandHandler;
-import com.example.demo.iface.event.AccountJournalHandler;
-import com.example.demo.iface.event.AccountSnapshotHandler;
+import com.example.demo.iface.handler.AccountCommandHandler;
+import com.example.demo.iface.handler.AccountJournalHandler;
+import com.example.demo.iface.handler.AccountSnapshotHandler;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.util.DaemonThreadFactory;

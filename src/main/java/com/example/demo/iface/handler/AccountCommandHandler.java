@@ -1,4 +1,4 @@
-package com.example.demo.iface.event;
+package com.example.demo.iface.handler;
 
 import org.springframework.stereotype.Component;
 
