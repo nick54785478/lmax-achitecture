@@ -69,6 +69,11 @@ public class AccountRepository {
 	 * 從 L1 Cache 取得帳戶
 	 */
 	public Account getFromL1(String accountId) {
+		// 防禦性檢查：ConcurrentHashMap 不允許 null key
+		if (accountId == null) {
+			log.warn(">>> [Repository] 嘗試讀取空的 AccountId，直接回傳 null");
+			return null;
+		}
 		return l1Cache.get(accountId);
 	}
 
