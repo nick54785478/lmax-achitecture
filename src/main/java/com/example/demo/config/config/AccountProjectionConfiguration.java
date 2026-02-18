@@ -24,7 +24,6 @@ import com.eventstore.dbclient.SubscriptionFilter;
 import com.eventstore.dbclient.SubscriptionListener;
 import com.example.demo.application.domain.account.aggregate.vo.CommandType;
 import com.example.demo.application.domain.account.event.AccountEvent;
-import com.example.demo.application.saga.MoneyTransferSaga;
 import com.example.demo.infra.event.mapper.EventStoreEventMapper;
 
 import jakarta.annotation.PostConstruct;
@@ -47,7 +46,6 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class AccountProjectionConfiguration {
 
-	private final MoneyTransferSaga moneyTransferSaga;
 	private final EventStoreDBClient client;
 	private final EventStoreEventMapper<AccountEvent> mapper;
 	private final JdbcTemplate jdbcTemplate;
@@ -59,8 +57,7 @@ public class AccountProjectionConfiguration {
 	private static final String PROJECTION_NAME = "account_balance_projection";
 
 	public AccountProjectionConfiguration(EventStoreDBClient client, EventStoreEventMapper<AccountEvent> mapper,
-			DataSource dataSource, MoneyTransferSaga moneyTransferSaga) {
-		this.moneyTransferSaga = moneyTransferSaga;
+			DataSource dataSource) {
 		this.client = client;
 		this.mapper = mapper;
 		this.jdbcTemplate = new JdbcTemplate(dataSource);

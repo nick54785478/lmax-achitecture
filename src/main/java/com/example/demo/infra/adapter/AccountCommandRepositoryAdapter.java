@@ -22,7 +22,7 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class AccountCommandRepositoryAdapter implements AccountCommandRepositoryPort {
+class AccountCommandRepositoryAdapter implements AccountCommandRepositoryPort {
 
 	/**
 	 * 技術組件：負責 L1 Cache 與 ES 重播技術

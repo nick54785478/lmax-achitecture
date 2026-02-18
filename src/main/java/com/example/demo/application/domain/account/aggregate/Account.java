@@ -1,6 +1,6 @@
 package com.example.demo.application.domain.account.aggregate;
 
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 import com.example.demo.application.domain.account.event.AccountEvent;
@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 public class Account {
 
 	private String accountId;
+
 	private double balance;
 
 	/**
@@ -23,8 +24,15 @@ public class Account {
 	 */
 	private long version;
 
-	// 記錄已處理過的交易 ID，防止重複執行相同指令
-	private Set<String> processedTransactions = new HashSet<>();
+	/**
+	 * * 限制視窗大小：只保留最近 1000 筆交易 ID。 這樣能保證快照大小恆定（約 40-60 KB），載入效能永遠穩定。
+	 */
+	private static final int MAX_IDEMPOTENT_IDS = 1000;
+
+	/**
+	 * 使用 LinkedHashSet 以維持插入順序，方便實作 FIFO (先進先出) 移除策略
+	 */
+	private Set<String> processedTransactions = new LinkedHashSet<>();
 
 	public Account(String accountId) {
 		this.accountId = accountId;
@@ -37,7 +45,7 @@ public class Account {
 		this.accountId = snapshot.getAccountId();
 		this.balance = snapshot.getBalance();
 		// 深度複製以確保 Aggregate Root 的獨立性
-		this.processedTransactions = new HashSet<>(snapshot.getProcessedTransactions());
+		this.processedTransactions = new LinkedHashSet<>(snapshot.getProcessedTransactions());
 		this.version = snapshot.getLastEventSequence();
 	}
 
@@ -61,9 +69,9 @@ public class Account {
 		default -> throw new IllegalArgumentException("未知事件類型: " + event.getType());
 		}
 
-		// 3. 處理成功後，記錄此交易 ID
+		// 3. 處理成功後，維護「滑動視窗」內的交易紀錄
 		if (event.getTransactionId() != null) {
-			processedTransactions.add(event.getTransactionId());
+			this.maintainIdempotentWindow(event.getTransactionId());
 		}
 	}
 
@@ -96,6 +104,22 @@ public class Account {
 			throw new IllegalArgumentException("快照資料不可為空");
 		}
 		return new Account(snapshot);
+	}
+
+	/**
+	 * 維護交易 ID 的滑動視窗 確保 processedTransactions 的大小永遠不會超過 MAX_IDEMPOTENT_IDS
+	 */
+	private void maintainIdempotentWindow(String txId) {
+		processedTransactions.add(txId);
+
+		if (processedTransactions.size() > MAX_IDEMPOTENT_IDS) {
+			// 取得迭代器，移除第一個（最老的）元素
+			String oldestId = processedTransactions.iterator().next();
+			processedTransactions.remove(oldestId);
+
+			// 僅在 DEBUG 等級記錄，避免頻繁 Log 影響效能
+			log.debug(">>> [Aggregate] 移除過期交易 ID: {}, 視窗維持在 {}", oldestId, MAX_IDEMPOTENT_IDS);
+		}
 	}
 
 }

@@ -38,9 +38,12 @@ public class AccountRepository {
 
 	/**
 	 * 技術核心：執行內存與重播加載邏輯
-	 * <p>
-	 * 1. 優先從 L1 緩存取得。 2. 若緩存未命中，則啟動從序號 0 開始的技術重構（保險機制）。
-	 * </p>
+	 * 
+	 * <pre>
+	 * 1. 優先從 L1 緩存取得。 
+	 * 2. 若緩存未命中，則啟動從序號 0 開始的技術重構（保險機制）。
+	 * </pre>
+	 * 
 	 * * @param accountId 帳戶唯一值
 	 * 
 	 * @return 加載完成的聚合根
@@ -96,6 +99,21 @@ public class AccountRepository {
 			// [關鍵修正] 只要是讀不到（包含 Stream 不存在），就回傳初始狀態
 			log.warn("無法從 EventStore 獲取帳戶 {} (原因: {})，將以基礎狀態回傳", accountId, e.getMessage());
 			return baseAccount;
+		}
+	}
+
+	/**
+	 * 從 L1 Cache 移除帳戶
+	 * <p>
+	 * 關鍵功能：用於基準測試或強制刷新情境。 移除後，下一次 load() 將被迫觸發外部存取（快照或 ES 重播）。
+	 * </p>
+	 * 
+	 * @param accountId 帳戶 ID
+	 */
+	public void removeFromL1(String accountId) {
+		if (l1Cache.containsKey(accountId)) {
+			l1Cache.remove(accountId);
+			log.info(">>> [L1 Cache] 已手動移除帳戶 {}，強制下次執行加載時重新重構狀態", accountId);
 		}
 	}
 }

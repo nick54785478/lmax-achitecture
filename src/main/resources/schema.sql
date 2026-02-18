@@ -29,3 +29,16 @@ CREATE TABLE IF NOT EXISTS saga_checkpoints (
 
 -- 建立索引加速「尋找最新快照」
 CREATE INDEX idx_account_latest ON account_snapshots (account_id, last_event_sequence DESC);
+
+
+CREATE TABLE IF NOT EXISTS processed_transactions (
+    -- 格式：{transactionId}:{step} (例如: tx-123:COMPENSATION)
+    id_key VARCHAR(128) PRIMARY KEY, 
+    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)ENGINE=InnoDB;
+
+-- 1. 增加一個虛擬欄位，自動提取冒號前的 UUID
+ALTER TABLE processed_transactions 
+ADD COLUMN tx_id VARCHAR(64) AS (SUBSTRING_INDEX(id_key, ':', 1)) VIRTUAL;
+-- 2. 為這個虛擬欄位建立索引
+CREATE INDEX idx_tx_id ON processed_transactions(tx_id);

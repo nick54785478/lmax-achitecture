@@ -31,7 +31,7 @@ public class AccountSnapshotHandler implements EventHandler<AccountEvent> {
 	/**
 	 * 測試期間：改為 1 (每筆都存) 或 5，確認邏輯通了再改回 100
 	 */
-	private final int SNAPSHOT_THRESHOLD = 5;
+	private final int SNAPSHOT_THRESHOLD = 100;
 
 	@Override
 	public void onEvent(AccountEvent event, long sequence, boolean endOfBatch) {
