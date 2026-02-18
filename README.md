@@ -15,24 +15,29 @@
 
 ### 專案定位
 
-本專案使用 LMAX Disruptor 作為核心引擎，結合 Event Sourcing (ES)、CQRS 與 Saga Pattern，實現一個高效能、具備最終一致性與自動補償機制的帳戶交易系統。
+本專案旨在探索 高吞吐量 與 最終一致性 的極限結合。透過與 AI (Gemini) 的協作深度討論，我們實作了一套基於 LMAX Disruptor 為核心引擎，並導入 Event Sourcing (ES)、CQRS 與 Saga Pattern 的現代化後端架構。
 
-註. 遵循 DDD + 六角形架構 (Hexagonal Architecture)。
-
+專案嚴格遵循 DDD (領域驅動設計) 與 六角形架構 (Hexagonal Architecture)，確保核心業務邏輯與外部依賴（MySQL, EventStoreDB）徹底解耦，達到真正的技術脫鉤。
 
 
 
 ### 核心目標
 
-* 高吞吐量：利用 Disruptor 實現低延遲並發交易。
+* 高吞吐量：利用 Disruptor 實現低延遲並發交易，實現無鎖（Lock-free）順序處理，單一執行緒即可發揮驚人吞吐量。
 
-* 最終一致性：透過 Saga 模式 處理跨聚合根（如: 轉帳）的分散式事務。
+* 最終一致性：透過 編排式 Saga (Choreography Saga) 處理跨聚合根轉帳。
 
 * 自動補償機制：當轉帳目標異常時，系統自動發起退款流程。
 
+* 分散式冪等強化：利用 MySQL 實作持久化冪等表，解決分散式環境下的重複執行問題。
+
 * 完全事件化：帳戶狀態可從 EventStoreDB 完美重建。
 
-* 讀寫分離 (CQRS)：Read Model (MySQL) 與 Write Model (EventStore) 徹底解耦。
+* 自動自癒機制 (Watcher)：獨創 SagaTimeoutWatcher，能自動回溯 EventStoreDB 事實，修復因系統崩潰產生的「孤兒交易」。
+
+* 讀寫分離 (CQRS)：寫入模型（Write Model, ESDB）與查詢模型（Read Model, MySQL）完全拆分。
+
+
 
 
 ### 架構概覽
@@ -64,10 +69,11 @@
 
 | 物件 | 責任 |
 | --- | --- |
-| AccountCommandService | 接收交易指令，將事件送入 Disruptor，並提供非同步寫入 EventStore 的方法。 |
-| LMAX Disruptor | 高性能事件處理引擎，負責將事件分發給多個 Handler。 |
+| AccountCommandService | 應用層入口：生成 TxId、派發指令至 Disruptor，並提供非同步寫入 EventStore 的方法。 |
+| LMAX Disruptor | 高性能事件處理引擎，確保所有寫入指令依序、高效地流經各個 Handler。 |
 | AccountJournalHandler | 將事件非同步寫入 EventStore (Journal)，確保事件不可變且可重放。 |
-| AccountCommandHandler | 聚合根內存計算，執行業務邏輯 (存款、提款)。 |
+| AccountCommandHandler | 聚合根內存計算，執行業務邏輯 (存款、提款)，維護 L1 Cache。 |
+| AccountJournalHandler | 事件持久化：將領域事實非同步寫入 EventStoreDB。 |
 | AccountDbPersistenceHandler | 將聚合根計算結果異步寫入 MySQL Read Model，支援 CQRS 查詢。 |
 | EventStoreEventMapper | 封裝 Domain Event 與 EventStore DB 格式之間的轉換。 |
 | EventJsonCodec | JSON 序列化/反序列化 Domain Event，技術脫鉤，支援多種事件類型。 |
@@ -75,6 +81,11 @@
 | MoneyTransferSaga | 事務協調者：監聽事件流，驅動轉帳接力賽（扣款 -> 存款）或啟動補償退款。|
 | CommandBusPort | 內部的指令發布埠：讓 Saga 能繞過外部 API，直接向核心引擎發送補償指令。|
 | ProjectionConfiguration | 讀取模型投影：訂閱全域事件流，異步更新 MySQL 餘額，並攔截失敗事件防止資料污染。 |
+| SagaTimeoutWatcher | 自癒監控器，掃描 MySQL 懸掛交易，從 $all stream 回溯事實並重啟流程。 |
+| IdempotencyRepository | 分散式防重門神：利用 MySQL 複合索引確保指令不被重複執行。 |
+| AccountProjection | 讀取模型投影：訂閱事件流，將最新餘額同步至 MySQL。 |
+
+
 
 
 
@@ -155,6 +166,31 @@ AccountDbPersistenceHandler 將計算結果 Upsert 至 MySQL accounts 表。
 
 **6. Query 使用: **
 查詢請求直接讀取 MySQL Read Model，避免阻塞業務邏輯。
+
+### 穩定性設計 (Advanced Features)
+
+*** 分散式冪等性 (Distributed Idempotency)**
+
+系統不依賴記憶體 Set，而是使用 MySQL 實作 processed_transactions 表，並將 (transaction_id, step) 設為複合主鍵。
+
+**優勢**：即便服務重啟或多機部署，也能精確判定特定交易的特定階段（如 INIT 或 COMPENSATION）是否已執行。
+
+
+*** Saga 自動補償與自癒 (Self-Healing)**
+
+當轉帳流程因「不可抗力」（如目標帳戶不存在、網路斷線、服務重啟）而中斷時：
+
+
+**1. 自動補償：**Saga 監聽到 FAIL 事件後，自動對原帳戶發起退款。
+
+
+**2. 超時自癒：**若系統在補償前崩潰，SagaTimeoutWatcher 會：
+
+>* 從 MySQL 找出超時未完成的交易。
+	
+>* 從 EventStoreDB 的 $all stream 掃描並回溯原始事實（金額、帳號）。
+	
+>* 重新發起修復指令，達成 100% 最終一致性。
 
 
 ### 六角形架構定位
@@ -267,6 +303,7 @@ AccountDbPersistenceHandler 將計算結果 Upsert 至 MySQL accounts 表。
 
 
 * 擴充性：支持多類型事件、快照、投影、Upcaster、版本管理。
+
 
 * 最終一致性: 系統採用 Choreography Saga 模式確保資料的最終一致性
 
