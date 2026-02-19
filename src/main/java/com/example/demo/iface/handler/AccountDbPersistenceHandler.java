@@ -1,16 +1,15 @@
 package com.example.demo.iface.handler;
 
-import javax.sql.DataSource;
-
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import com.example.demo.application.domain.account.aggregate.Account;
 import com.example.demo.application.domain.account.aggregate.vo.CommandType;
 import com.example.demo.application.domain.account.event.AccountEvent;
+import com.example.demo.application.port.AccountReadModelRepositoryPort;
 import com.example.demo.infra.repository.AccountRepository;
 import com.lmax.disruptor.EventHandler;
 
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -22,15 +21,11 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class AccountDbPersistenceHandler implements EventHandler<AccountEvent> {
 
-	private final JdbcTemplate jdbcTemplate;
+	private final AccountReadModelRepositoryPort readModelRepository;
 	private final AccountRepository accountRepository;
-
-	public AccountDbPersistenceHandler(DataSource dataSource, AccountRepository accountRepository) {
-		this.jdbcTemplate = new JdbcTemplate(dataSource);
-		this.accountRepository = accountRepository;
-	}
 
 	@Override
 	public void onEvent(AccountEvent event, long sequence, boolean endOfBatch) {
@@ -41,30 +36,20 @@ public class AccountDbPersistenceHandler implements EventHandler<AccountEvent> {
 		}
 
 		try {
-			// 2. 從技術倉儲取得內存最新餘額
+			// 2. 獲取最終狀態
 			Account account = accountRepository.load(event.getAccountId());
-			double finalBalance = account.getBalance();
 
-			// 3. 根據事件類型決定投影策略，防止提款操作產生幽靈帳號
+			// 3. 根據業務語義選擇 Port 方法
 			if (event.getType() == CommandType.DEPOSIT) {
-				// 存款：使用 UPSERT 確保帳號存在
-				String sql = """
-						INSERT INTO accounts (account_id, balance, last_updated_at)
-						VALUES (?, ?, NOW())
-						ON DUPLICATE KEY UPDATE balance = VALUES(balance), last_updated_at = NOW()
-						""";
-				jdbcTemplate.update(sql, account.getAccountId(), finalBalance);
+				readModelRepository.upsertBalance(account.getAccountId(), account.getBalance());
 			} else {
-				// 提款：嚴禁 INSERT，僅執行 UPDATE 以維護邊界完整性
-				String sql = "UPDATE accounts SET balance = ?, last_updated_at = NOW() WHERE account_id = ?";
-				int affected = jdbcTemplate.update(sql, finalBalance, account.getAccountId());
-
-				if (affected == 0) {
-					log.error(">>> [CQRS] 提款同步失敗：帳號 {} 不存在於讀模型", account.getAccountId());
-				}
+				readModelRepository.updateBalanceOnly(account.getAccountId(), account.getBalance());
 			}
+
+			log.debug("[CQRS] 讀模型同步成功: {}", event.getAccountId());
+
 		} catch (Exception e) {
-			log.error("MySQL 讀模型投影失敗 (Seq: {}): {}", sequence, e.getMessage());
+			log.error(">>> [CQRS] 讀模型投影失敗 (Seq: {}): {}", sequence, e.getMessage());
 		}
 	}
 }
