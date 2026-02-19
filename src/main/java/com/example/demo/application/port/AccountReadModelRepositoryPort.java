@@ -1,5 +1,9 @@
 package com.example.demo.application.port;
 
+import java.util.List;
+
+import com.example.demo.application.domain.account.command.AccountSyncAction;
+
 /**
  * 帳戶讀取模型存取埠 (Account Read Model Repository Port) *
  * <p>
@@ -9,13 +13,13 @@ package com.example.demo.application.port;
 public interface AccountReadModelRepositoryPort {
 
 	/**
-	 * 同步帳戶餘額 (存款/初始化場景) 使用 UPSERT 確保資料存在
+	 * 批次執行存款 (UPSERT)
 	 */
-	void upsertBalance(String accountId, double balance);
+	void batchUpsertBalances(List<AccountSyncAction> actions);
 
 	/**
-	 * 更新帳戶餘額 (提款場景) 僅執行 UPDATE，確保邊界完整性
+	 * 批次執行提款 (UPDATE ONLY)
 	 */
-	void updateBalanceOnly(String accountId, double balance);
+	void batchUpdateBalancesOnly(List<AccountSyncAction> actions);
 
 }

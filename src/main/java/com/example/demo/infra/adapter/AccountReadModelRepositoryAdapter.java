@@ -1,8 +1,14 @@
 package com.example.demo.infra.adapter;
 
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.List;
+
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import com.example.demo.application.domain.account.command.AccountSyncAction;
 import com.example.demo.application.port.AccountReadModelRepositoryPort;
 
 import lombok.RequiredArgsConstructor;
@@ -14,22 +20,44 @@ public class AccountReadModelRepositoryAdapter implements AccountReadModelReposi
 	private final JdbcTemplate jdbcTemplate;
 
 	@Override
-	public void upsertBalance(String accountId, double balance) {
+	public void batchUpsertBalances(List<AccountSyncAction> actions) {
 		String sql = """
 				INSERT INTO accounts (account_id, balance, last_updated_at)
 				VALUES (?, ?, NOW())
 				ON DUPLICATE KEY UPDATE balance = VALUES(balance), last_updated_at = NOW()
 				""";
-		jdbcTemplate.update(sql, accountId, balance);
+
+		jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
+			@Override
+			public void setValues(PreparedStatement ps, int i) throws SQLException {
+				AccountSyncAction action = actions.get(i);
+				ps.setString(1, action.getAccountId());
+				ps.setDouble(2, action.getBalance());
+			}
+
+			@Override
+			public int getBatchSize() {
+				return actions.size();
+			}
+		});
 	}
 
 	@Override
-	public void updateBalanceOnly(String accountId, double balance) {
+	public void batchUpdateBalancesOnly(List<AccountSyncAction> actions) {
 		String sql = "UPDATE accounts SET balance = ?, last_updated_at = NOW() WHERE account_id = ?";
-		int affected = jdbcTemplate.update(sql, balance, accountId);
-		if (affected == 0) {
-			// 這裡拋出技術異常，由 Handler 決定是否記錄 Log
-			throw new RuntimeException("讀模型同步失敗：帳號 " + accountId + " 不存在");
-		}
+
+		jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
+			@Override
+			public void setValues(PreparedStatement ps, int i) throws SQLException {
+				AccountSyncAction action = actions.get(i);
+				ps.setDouble(1, action.getBalance());
+				ps.setString(2, action.getAccountId());
+			}
+
+			@Override
+			public int getBatchSize() {
+				return actions.size();
+			}
+		});
 	}
 }
