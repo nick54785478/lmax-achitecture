@@ -4,13 +4,22 @@ import lombok.Data;
 
 /**
  * Account Command Event
- * */
+ */
 @Data
 public class AccountCommandEvent {
-	
-	private String accountId; // 帳號唯一值
-	  
-	private double amount; // 數額
-	
-	private String action; // DEPOSIT or WITHDRAW
+
+	/**
+	 * Account Id 帳號唯一值
+	 */
+	private String accountId;
+
+	/**
+	 * 數額
+	 */
+	private double amount;
+
+	/**
+	 * 動作，DEPOSIT or WITHDRAW
+	 */
+	private String action;
 }

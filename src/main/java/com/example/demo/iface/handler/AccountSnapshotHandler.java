@@ -61,7 +61,7 @@ public class AccountSnapshotHandler implements EventHandler<AccountEvent> {
 
 		// 1. 【Given】判定觸發條件：非失敗事件且達到序號門檻
 		if (event.getType() != CommandType.FAIL && sequence > 0 && sequence % SNAPSHOT_THRESHOLD == 0) {
-			performSnapshot(event.getAccountId(), sequence);
+			this.performSnapshot(event.getAccountId(), sequence);
 		}
 	}
 

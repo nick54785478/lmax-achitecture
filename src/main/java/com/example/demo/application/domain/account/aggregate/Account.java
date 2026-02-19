@@ -15,8 +15,14 @@ import lombok.extern.slf4j.Slf4j;
 @NoArgsConstructor
 public class Account {
 
+	/**
+	 * Account Id
+	 */
 	private String accountId;
 
+	/**
+	 * 數額
+	 */
 	private double balance;
 
 	/**
@@ -25,7 +31,7 @@ public class Account {
 	private long version;
 
 	/**
-	 * * 限制視窗大小：只保留最近 1000 筆交易 ID。 這樣能保證快照大小恆定（約 40-60 KB），載入效能永遠穩定。
+	 * 限制視窗大小：只保留最近 1000 筆交易 ID。 這樣能保證快照大小恆定（約 40-60 KB），載入效能永遠穩定。
 	 */
 	private static final int MAX_IDEMPOTENT_IDS = 1000;
 
@@ -52,7 +58,7 @@ public class Account {
 	/**
 	 * 聚合根統一入口：包含冪等性檢查與規則應用
 	 * 
-	 * @param event 事件
+	 * @param event 交易事件
 	 */
 	public void apply(AccountEvent event) {
 		// 1. 冪等性檢查：如果這筆交易 ID 已經處理過，直接跳過或拋出異常
@@ -100,6 +106,9 @@ public class Account {
 
 	/**
 	 * 快照工廠方法：將「還原邏輯」封裝在 Aggregate 內部 這樣 Repository 就不需要知道如何填充 Account 的私有屬性
+	 * 
+	 * @param snapshot 快照
+	 * @return Account 資料
 	 */
 	public static Account fromSnapshot(AccountSnapshot snapshot) {
 		if (snapshot == null) {
@@ -114,7 +123,7 @@ public class Account {
 	 * @param txId Transaction Id
 	 */
 	private void maintainIdempotentWindow(String txId) {
-		processedTransactions.add(txId);
+		this.processedTransactions.add(txId);
 
 		if (processedTransactions.size() > MAX_IDEMPOTENT_IDS) {
 			// 取得迭代器，移除第一個（最老的）元素

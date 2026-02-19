@@ -48,13 +48,13 @@ public class MoneyTransferSaga {
 	 * @param event 接收到的帳戶領域事件
 	 */
 	public void onEvent(AccountEvent event) {
-		
-		// 如果看到這個暗號，Saga 必須完全保持沈默，把表演舞台留給 Watcher
-	    if ("IGNORE_ME_SAGA".equals(event.getDescription())) {
-	        log.info(">>> [Saga] 偵測到測試暗號 (Tx: {})，主動忽略以利 Watcher 測試進行", event.getTransactionId());
-	        return;
-	    }
-	    
+
+		// 用於測試 (如果看到這個暗號，Saga 須完全保持沈默，把表演舞台留給 Watcher)
+		if ("IGNORE_ME_SAGA".equals(event.getDescription())) {
+			log.info(">>> [Saga] 偵測到測試暗號 (Tx: {})，主動忽略以利 Watcher 測試進行", event.getTransactionId());
+			return;
+		}
+
 		try {
 
 			// 在進入邏輯前先印出收到的內容，確認不是空的
@@ -70,6 +70,7 @@ public class MoneyTransferSaga {
 					return;
 				}
 
+				// 嘗試標記特定交易階段為已處理
 				if (!idempotencyRepository.tryMarkAsProcessed(event.getTransactionId(), "INIT")) {
 					log.warn(">>> [Idempotency] 跳過已處理的轉帳意圖 (Tx: {})", event.getTransactionId());
 					return;
@@ -83,12 +84,12 @@ public class MoneyTransferSaga {
 			else if (event.getType() == CommandType.FAIL && "TRANSFER_DEPOSIT".equals(event.getDescription())) {
 
 				// 如果是 Watcher 觸發的，event.getTargetId() 可能是 null
-			    if (event.getTargetId() == null) {
-			        log.error(">>> [Saga] 收到超時恢復請求，但丟失了原始扣款人資訊 (Tx: {})", event.getTransactionId());
-			        // 這裡通常要進入「人工介入」流程，或是在 Watcher 觸發時就帶入資訊
-			        return; 
-			    }
-			    
+				if (event.getTargetId() == null) {
+					log.error(">>> [Saga] 收到超時恢復請求，但丟失了原始扣款人資訊 (Tx: {})", event.getTransactionId());
+					// 這裡通常要進入「人工介入」流程，或是在 Watcher 觸發時就帶入資訊
+					return;
+				}
+
 				// 【持久化檢查】確保補償退款指令「有且僅有一次」被送出
 				if (!idempotencyRepository.tryMarkAsProcessed(event.getTransactionId(), "COMPENSATION")) {
 					log.warn(">>> [Idempotency] 跳過已處理的補償請求 (Tx: {})", event.getTransactionId());
@@ -105,6 +106,8 @@ public class MoneyTransferSaga {
 
 	/**
 	 * 執行轉帳的第二階段：對目標帳戶進行存款。
+	 * 
+	 * @param event AccountEvent
 	 */
 	private void processDeposit(AccountEvent event) {
 		log.info(">>> [Saga] 準備存入目標: {} (Tx: {})", event.getTargetId(), event.getTransactionId());
@@ -117,11 +120,14 @@ public class MoneyTransferSaga {
 		depositCmd.setType(CommandType.DEPOSIT);
 		depositCmd.setDescription("TRANSFER_DEPOSIT");
 
+		// 發布 Deposit 事件
 		commandBus.send(depositCmd);
 	}
 
 	/**
 	 * 執行自動化補償事務 (Compensating Transaction)。
+	 * 
+	 * @param event AccountEvent
 	 */
 	private void processCompensation(AccountEvent event) {
 		log.error(">>> [Saga] 轉帳存款失敗 (Tx: {})。啟動補償：退款至原帳戶 {}", event.getTransactionId(), event.getTargetId());

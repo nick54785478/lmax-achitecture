@@ -49,6 +49,9 @@ public class AccountCommandHandler implements EventHandler<AccountEvent> {
 
 	/**
 	 * 判斷是否為「自動生成的空帳戶」
+	 * 
+	 * @param account 帳號
+	 * @return true/false
 	 */
 	private boolean isNewAccount(Account account) {
 		// 確保集合不為 null 且為空，且餘額為 0

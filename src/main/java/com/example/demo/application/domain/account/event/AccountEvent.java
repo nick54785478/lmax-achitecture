@@ -14,17 +14,35 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class AccountEvent {
 
-	private String accountId; // Account Id
+	/**
+	 * Account Id
+	 */
+	private String accountId;
 
-	private double amount; // 金額
+	/**
+	 * 金額
+	 */
+	private double amount;
 
-	private CommandType type; // "DEPOSIT" or "WITHDRAW"
+	/**
+	 * "DEPOSIT" or "WITHDRAW" or "FAIL"
+	 */
+	private CommandType type; //
 
 	// --- 為了 Saga 新增的關鍵欄位 ---
 
-	private String transactionId; // 交易追蹤 ID (Saga 的靈魂)
+	/**
+	 * 交易追蹤 ID (Saga 的靈魂)
+	 */
+	private String transactionId;
 
-	private String targetId; // 轉帳目標帳戶 (轉帳扣款時需要知道錢往哪去)
+	/**
+	 * 轉帳目標帳戶 (轉帳扣款時需要知道錢往哪去)
+	 */
+	private String targetId;
 
-	private String description; // 備註 (例如："SUCCESS", "FAIL_ACCOUNT_NOT_FOUND", "COMPENSATION")
+	/**
+	 * 備註 (例如："SUCCESS", "FAIL_ACCOUNT_NOT_FOUND", "COMPENSATION")
+	 */
+	private String description;
 }

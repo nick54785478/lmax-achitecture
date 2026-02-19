@@ -19,6 +19,7 @@ public class AccountQueryService {
 	 * 直接讀取最新的投影結果
 	 * 
 	 * @param accountId 聚合根唯一值
+	 * @return AccountQueriedProjection 投影結果
 	 */
 	public AccountQueriedProjection getAccountBalance(String accountId) {
 		return accountQueryRepository.getAccountBalance(accountId);
