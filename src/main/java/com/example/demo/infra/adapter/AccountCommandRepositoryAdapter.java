@@ -1,13 +1,18 @@
 package com.example.demo.infra.adapter;
 
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.stereotype.Component;
 
+import com.eventstore.dbclient.EventData;
+import com.eventstore.dbclient.EventStoreDBClient;
 import com.example.demo.application.domain.account.aggregate.Account;
+import com.example.demo.application.domain.account.event.AccountEvent;
 import com.example.demo.application.domain.account.snapshot.AccountSnapshot;
 import com.example.demo.application.port.AccountCommandRepositoryPort;
 import com.example.demo.application.port.AccountSnapshotRepositoryPort;
+import com.example.demo.infra.event.mapper.EventStoreEventMapper;
 import com.example.demo.infra.repository.AccountRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -33,6 +38,10 @@ class AccountCommandRepositoryAdapter implements AccountCommandRepositoryPort {
 	 * 技術介面：負責快照的存取
 	 */
 	private final AccountSnapshotRepositoryPort snapshotPersistence;
+	
+	private final EventStoreDBClient client;
+	
+    private final EventStoreEventMapper<AccountEvent> mapper;
 
 	/**
 	 * 取得完整聚合根 (Domain Aggregate) 以進行狀態變更
@@ -72,4 +81,21 @@ class AccountCommandRepositoryAdapter implements AccountCommandRepositoryPort {
 
 		return finalAccount;
 	}
+	
+	@Override
+    public void appendEvents(String accountId, List<AccountEvent> events) {
+        String streamName = "Account-" + accountId;
+        
+        // 將領域事件轉換為 EventStoreDB 格式
+        List<EventData> eventDataList = events.stream()
+                .map(mapper::toEventData)
+                .toList();
+
+        try {
+            // 一次性追加所有事件，這是原子的 (Atomic per Stream)
+            client.appendToStream(streamName, eventDataList.iterator()).get();
+        } catch (Exception e) {
+            throw new RuntimeException("EventStore 批次寫入失敗: " + streamName, e);
+        }
+    }
 }

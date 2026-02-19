@@ -7,7 +7,7 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class AccountSyncAction {
+public class SyncAccountCommand {
 
 	private String accountId;
 	

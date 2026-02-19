@@ -1,5 +1,10 @@
 package com.example.demo.application.service;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+
 import org.springframework.stereotype.Service;
 
 import com.eventstore.dbclient.EventData;
@@ -84,4 +89,46 @@ public class AccountCommandService {
 			return null;
 		});
 	}
+
+	/**
+	 * 【批次寫入核心】將分組後的事件清單一次性追加到各個對應的 Stream
+	 * 
+	 * @param journalBuffer 以 AccountId 為 Key 的事件地圖
+	 */
+//	public void batchAppendToEventStore(Map<String, List<AccountEvent>> journalBuffer) {
+//		journalBuffer.forEach((accountId, events) -> {
+//			String streamName = "Account-" + accountId;
+//
+//			// 將整個 List 的領域事件轉為 EventData 迭代器
+//			List<EventData> eventDataBatch = events.stream().map(mapper::toEventData).toList();
+//
+//			// EventStoreDB 支援一次追加多個事件至同一個 Stream，這在伺服器端是原子的
+//			client.appendToStream(streamName, eventDataBatch.iterator()).thenAccept(result -> {
+//				log.debug("Batch 寫入成功: Stream={}, 新版本={}, 筆數={}", streamName, result.getNextExpectedRevision(),
+//						eventDataBatch.size());
+//			}).exceptionally(ex -> {
+//				log.error("Batch 寫入失敗！Stream={}: {}", streamName, ex.getMessage());
+//				return null;
+//			});
+//		});
+//	}
+	
+
+	public void syncBatchAppend(Map<String, List<AccountEvent>> journalBuffer) {
+	    // 收集所有非同步任務
+	    List<CompletableFuture<?>> futures = new ArrayList<>();
+
+	    journalBuffer.forEach((accountId, events) -> {
+	        String streamName = "Account-" + accountId;
+	        List<EventData> eventDataBatch = events.stream().map(mapper::toEventData).toList();
+
+	        // 發起寫入請求
+	        futures.add(client.appendToStream(streamName, eventDataBatch.iterator()));
+	    });
+
+	    // 【安全護欄核心】等待所有帳戶的寫入任務全部完成
+	    // 如果其中一個失敗，CompletableFuture.allOf 會拋出異常
+	    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+	}
+
 }

@@ -2,7 +2,7 @@ package com.example.demo.application.port;
 
 import java.util.List;
 
-import com.example.demo.application.domain.account.command.AccountSyncAction;
+import com.example.demo.application.domain.account.command.SyncAccountCommand;
 
 /**
  * 帳戶讀取模型存取埠 (Account Read Model Repository Port) *
@@ -15,11 +15,11 @@ public interface AccountReadModelRepositoryPort {
 	/**
 	 * 批次執行存款 (UPSERT)
 	 */
-	void batchUpsertBalances(List<AccountSyncAction> actions);
+	void batchUpsertBalances(List<SyncAccountCommand> actions);
 
 	/**
 	 * 批次執行提款 (UPDATE ONLY)
 	 */
-	void batchUpdateBalancesOnly(List<AccountSyncAction> actions);
+	void batchUpdateBalancesOnly(List<SyncAccountCommand> actions);
 
 }

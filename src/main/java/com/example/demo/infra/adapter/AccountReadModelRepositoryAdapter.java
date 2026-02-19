@@ -8,7 +8,7 @@ import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
-import com.example.demo.application.domain.account.command.AccountSyncAction;
+import com.example.demo.application.domain.account.command.SyncAccountCommand;
 import com.example.demo.application.port.AccountReadModelRepositoryPort;
 
 import lombok.RequiredArgsConstructor;
@@ -20,7 +20,7 @@ public class AccountReadModelRepositoryAdapter implements AccountReadModelReposi
 	private final JdbcTemplate jdbcTemplate;
 
 	@Override
-	public void batchUpsertBalances(List<AccountSyncAction> actions) {
+	public void batchUpsertBalances(List<SyncAccountCommand> actions) {
 		String sql = """
 				INSERT INTO accounts (account_id, balance, last_updated_at)
 				VALUES (?, ?, NOW())
@@ -30,7 +30,7 @@ public class AccountReadModelRepositoryAdapter implements AccountReadModelReposi
 		jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
 			@Override
 			public void setValues(PreparedStatement ps, int i) throws SQLException {
-				AccountSyncAction action = actions.get(i);
+				SyncAccountCommand action = actions.get(i);
 				ps.setString(1, action.getAccountId());
 				ps.setDouble(2, action.getBalance());
 			}
@@ -43,13 +43,13 @@ public class AccountReadModelRepositoryAdapter implements AccountReadModelReposi
 	}
 
 	@Override
-	public void batchUpdateBalancesOnly(List<AccountSyncAction> actions) {
+	public void batchUpdateBalancesOnly(List<SyncAccountCommand> actions) {
 		String sql = "UPDATE accounts SET balance = ?, last_updated_at = NOW() WHERE account_id = ?";
 
 		jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
 			@Override
 			public void setValues(PreparedStatement ps, int i) throws SQLException {
-				AccountSyncAction action = actions.get(i);
+				SyncAccountCommand action = actions.get(i);
 				ps.setDouble(1, action.getBalance());
 				ps.setString(2, action.getAccountId());
 			}

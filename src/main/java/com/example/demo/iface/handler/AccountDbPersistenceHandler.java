@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 
 import com.example.demo.application.domain.account.aggregate.Account;
 import com.example.demo.application.domain.account.aggregate.vo.CommandType;
-import com.example.demo.application.domain.account.command.AccountSyncAction;
+import com.example.demo.application.domain.account.command.SyncAccountCommand;
 import com.example.demo.application.domain.account.event.AccountEvent;
 import com.example.demo.application.port.AccountReadModelRepositoryPort;
 import com.example.demo.infra.repository.AccountRepository;
@@ -32,8 +32,8 @@ public class AccountDbPersistenceHandler implements EventHandler<AccountEvent> {
 	private final AccountReadModelRepositoryPort readModelRepository;
 	private final AccountRepository accountRepository;
 	// 緩衝區：使用 Map 進行批次內去重 (Key: AccountId)
-	private final Map<String, AccountSyncAction> upsertBuffer = new LinkedHashMap<>();
-	private final Map<String, AccountSyncAction> updateBuffer = new LinkedHashMap<>();
+	private final Map<String, SyncAccountCommand> upsertBuffer = new LinkedHashMap<>();
+	private final Map<String, SyncAccountCommand> updateBuffer = new LinkedHashMap<>();
 
 	@Override
 	public void onEvent(AccountEvent event, long sequence, boolean endOfBatch) {
@@ -51,7 +51,7 @@ public class AccountDbPersistenceHandler implements EventHandler<AccountEvent> {
 	private void prepareBuffer(AccountEvent event) {
 		// 從 L1 Cache 拿到最新的最終狀態
 		Account account = accountRepository.load(event.getAccountId());
-		AccountSyncAction action = new AccountSyncAction(account.getAccountId(), account.getBalance());
+		SyncAccountCommand action = new SyncAccountCommand(account.getAccountId(), account.getBalance());
 
 		if (event.getType() == CommandType.DEPOSIT) {
 			// 存款：放入 Upsert 緩衝區，若重複則蓋過 (保持最新餘額)
