@@ -19,7 +19,7 @@ import tools.jackson.databind.ObjectMapper;
 @Slf4j
 @Repository
 @RequiredArgsConstructor
-public class AccountSnapshotAdapter implements AccountSnapshotRepositoryPort {
+class AccountSnapshotRepositoryAdapter implements AccountSnapshotRepositoryPort {
 
 	private final JdbcTemplate jdbcTemplate;
 	private final ObjectMapper objectMapper; // 使用專案既有的 Jackson
@@ -89,9 +89,18 @@ public class AccountSnapshotAdapter implements AccountSnapshotRepositoryPort {
 		}
 	}
 
+	/**
+	 * 清理舊快照 (Retention Policy Implementation)。
+	 * <p>
+	 * <b>用途：</b> 在生產環境中，快照不需要永久保存。通常我們只關心「最新的一個」快照。 此方法用於刪除過時的快照，節省 MySQL
+	 * 儲存空間並保持查詢效能。
+	 * </p>
+	 *
+	 * @param accountId   帳戶識別碼。
+	 * @param retainCount 要保留的最新快照數量（例如：1 代表僅保留最新的一份）。
+	 */
 	@Override
 	public void deleteOlderSnapshots(String accountId, int retainCount) {
-		// 選填：清理邏輯，僅保留最新的幾份快照以節省空間
 		String sql = """
 				DELETE FROM account_snapshots
 				WHERE account_id = ?
@@ -101,10 +110,18 @@ public class AccountSnapshotAdapter implements AccountSnapshotRepositoryPort {
 				        FROM account_snapshots
 				        WHERE account_id = ?
 				        ORDER BY last_event_sequence DESC
-				        LIMIT ?
+				        LIMIT 1 OFFSET ?
 				    ) as tmp
 				)
 				""";
-		// 實作略...
+		try {
+			// OFFSET 為 retainCount - 1，保留前 N 個
+			int deleted = jdbcTemplate.update(sql, accountId, accountId, retainCount - 1);
+			if (deleted > 0) {
+				log.info(">>> [Snapshot Cleanup] 帳戶 {} 已清理 {} 份舊快照", accountId, deleted);
+			}
+		} catch (Exception e) {
+			log.warn(">>> [Snapshot Cleanup] 清理失敗，可能無舊快照可供刪除");
+		}
 	}
 }

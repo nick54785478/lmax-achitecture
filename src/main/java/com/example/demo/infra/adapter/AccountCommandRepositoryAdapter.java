@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 import com.example.demo.application.domain.account.aggregate.Account;
 import com.example.demo.application.domain.account.snapshot.AccountSnapshot;
 import com.example.demo.application.port.AccountCommandRepositoryPort;
-import com.example.demo.infra.persisence.AccountSnapshotPersistence;
+import com.example.demo.application.port.AccountSnapshotRepositoryPort;
 import com.example.demo.infra.repository.AccountRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -32,8 +32,13 @@ class AccountCommandRepositoryAdapter implements AccountCommandRepositoryPort {
 	/**
 	 * 技術介面：負責快照的存取
 	 */
-	private final AccountSnapshotPersistence snapshotPersistence;
+	private final AccountSnapshotRepositoryPort snapshotPersistence;
 
+	/**
+	 * 取得完整聚合根 (Domain Aggregate) 以進行狀態變更
+	 * 
+	 * @param accountId 聚合根的唯一值
+	 */
 	@Override
 	public Account load(String accountId) {
 		// 1. 策略 A：內存優先 (L1 Cache)

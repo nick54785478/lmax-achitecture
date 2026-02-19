@@ -20,9 +20,9 @@ import com.example.demo.application.domain.account.aggregate.vo.CommandType;
 import com.example.demo.application.domain.account.event.AccountEvent;
 import com.example.demo.application.domain.account.snapshot.AccountSnapshot;
 import com.example.demo.application.port.AccountCommandRepositoryPort;
+import com.example.demo.application.port.AccountSnapshotRepositoryPort;
 import com.example.demo.config.init.ReplayBenchmarkRunner;
 import com.example.demo.infra.event.mapper.EventStoreEventMapper;
-import com.example.demo.infra.persisence.AccountSnapshotPersistence;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -47,21 +47,29 @@ class SagaBenchmarkTest {
 	@Autowired
 	private ReplayBenchmarkRunner benchmarkRunner;
 
-	/** 核心領域埠：負責指揮載入策略 (L1 -> Snapshot -> Replay) */
+	/**
+	 * 核心領域埠：負責指揮載入策略 (L1 -> Snapshot -> Replay)
+	 */
 	@Autowired
 	private AccountCommandRepositoryPort repositoryAdapter;
 
-	/** 技術組件：提供測試資料填充服務 */
+	/**
+	 * 技術組件：提供測試資料填充服務
+	 */
 	@Autowired
 	private DataSeedService seedService;
 
-	/** 基礎設施：提供直接操作資料庫的低階存取 */
+	/**
+	 * 基礎設施：提供直接操作資料庫的低階存取
+	 */
 	@Autowired
 	private JdbcTemplate jdbcTemplate;
 
-	/** 技術介面：負責快照的強制持久化 */
+	/**
+	 * 技術介面：負責快照的強制持久化
+	 */
 	@Autowired
-	private AccountSnapshotPersistence snapshotPersistence;
+	private AccountSnapshotRepositoryPort snapshotPersistence;
 
 	/**
 	 * <h2>執行完整基準測試場景</h2>
