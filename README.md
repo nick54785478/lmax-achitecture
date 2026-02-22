@@ -33,7 +33,7 @@
 
 * 完全事件化：帳戶狀態可從 EventStoreDB 完美重建。
 
-* 自動自癒機制 (Watcher)：獨創 SagaTimeoutWatcher，能自動回溯 EventStoreDB 事實，修復因系統崩潰產生的「孤兒交易」。
+* 自動自癒機制 (Watcher)：設計 SagaTimeoutWatcher，能自動回溯 EventStoreDB 事實，修復因系統崩潰產生的「孤兒交易」。
 
 * 讀寫分離 (CQRS)：寫入模型（Write Model, ESDB）與查詢模型（Read Model, MySQL）完全拆分。
 
@@ -42,7 +42,7 @@
 
 ### 架構概覽
 
-	Client / API
+	      Client / API
 	            |
 	            v
 	    [CommandService]  <-- 入口：生成 TxId 並發送指令
