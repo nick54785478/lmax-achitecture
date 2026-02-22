@@ -102,22 +102,22 @@
 
 ### Event Sourcing 流程
 
-**1. Command 發起**
+**1. Command 發起:**
 客戶端或服務調用 AccountCommandService.processTransaction() 發送指令。
 
-**2. 事件入隊: **
+**2. 事件入隊:**
 	Disruptor 接收事件，並依序分發給 Handler。
 
-**3. 事件持久化: **
+**3. 事件持久化:**
 AccountJournalHandler 將事件非同步寫入 EventStoreDB。
 
-**4. 聚合根計算: **
+**4. 聚合根計算:**
 AccountCommandHandler 讀取內存 Repository，計算最新帳戶狀態。
 
-**5. 快照與 Read Model 更新: **
+**5. 快照與 Read Model 更新:**
 AccountDbPersistenceHandler 將計算結果 Upsert 至 MySQL accounts 表。
 
-**6. Query 使用: **
+**6. Query 使用:**
 查詢請求直接讀取 MySQL Read Model，避免阻塞業務邏輯。
 
 
